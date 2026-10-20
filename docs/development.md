@@ -12,7 +12,8 @@ web/
   src/             React + TypeScript UI (Aquarium design system)
   scripts/         Generator for the dark theme (src/dark.css)
 docs/              Documentation
-docker-compose.yml App + Postgres (+ optional dev Kafka)
+docker-compose.yml     App + Postgres (this is what you deploy)
+docker-compose.dev.yml Throwaway local Kafka for testing the Kafka integration
 .env.example       All settings
 ```
 
@@ -61,13 +62,13 @@ It prints `ok` when everything passes. The checks cover failure-summary extracti
 ## Trying the Kafka destination locally
 
 ```bash
-docker compose --profile dev up -d kafka
+docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d kafka
 ```
 
 Add a Kafka integration with bootstrap servers `kafka:9092` and security `PLAINTEXT`, then consume what arrives:
 
 ```bash
-docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
+docker compose -f docker-compose.yml -f docker-compose.dev.yml exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
   --bootstrap-server kafka:9092 --topic datahub.ingestion.logs --from-beginning
 ```
 

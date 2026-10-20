@@ -27,12 +27,18 @@ Before using it beyond a trial:
 
 - Set `POSTGRES_PASSWORD` to your own value in `.env` **before the first start** (the database is created with it).
 - Put the app behind a reverse proxy that terminates TLS, then set `COOKIE_SECURE=1`.
-- The `db` service is not published on the host; keep it that way. The `kafka` service is a development helper behind the `dev` profile and is not started by default.
+- The `db` service is not published on the host; keep it that way. `docker-compose.yml` contains only the app and Postgres. The app does not run or need a Kafka of its own: DataHub's Kafka and your destinations are external services reached through settings. `docker-compose.dev.yml` is a local testing helper; never deploy it.
 - Back up the `pg-data` volume (or use `pg_dump`) and keep `APP_ENCRYPTION_KEY` somewhere safe.
 
 ### Certificates
 
 With Compose, mTLS files are read from `./certs`, mounted at `/certs`. The container runs as a non-root user (uid 10001), so the files must be readable by it: `chmod 644 certs/*` on Linux hosts, or avoid files altogether by pasting the PEM text into `KAFKA_CA`, `KAFKA_CERT` and `KAFKA_KEY`.
+
+## Importing the Compose file into a platform
+
+`docker-compose.yml` defines two services, `app` and `db` (Postgres). That is everything the application itself needs. There is no Kafka service: DataHub's Kafka and your destinations are existing external systems that the app connects to using the settings in `.env`.
+
+Platforms that read a Compose file (including Aiven's application deployment) turn each service into a managed resource: `app` becomes the application and `db` becomes a managed PostgreSQL. Whatever the platform generates for the database, make sure the app receives its connection string as `DATABASE_URL`. If you would rather use an existing Postgres, delete the `db` service and the app's `depends_on` from the file before importing and set `DATABASE_URL` yourself.
 
 ## Aiven
 
