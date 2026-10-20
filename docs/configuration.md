@@ -10,7 +10,7 @@ The image sets these three variables to **public default values** (see `app/Dock
 |---|---|
 | `APP_ENCRYPTION_KEY` | Fernet key that encrypts integration credentials and the DataHub connection settings in Postgres. Default: a public key from the repository. Generate your own with `python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`. **Changing it:** set it to `NEWKEY,OLDKEY` (new first) so existing data stays readable, then re-save your integrations and Settings to re-encrypt them with the new key, and finally drop the old key. **Back it up**: without it saved credentials can't be read. |
 | `ADMIN_USER`, `ADMIN_PASSWORD` | The UI login. Defaults: `admin` / `change-me-now`. The account is created or updated on every start, so changing the password here resets it. Minimum 8 characters. |
-| `COOKIE_SECURE` | auto | The session cookie is marked `Secure` automatically when the request arrives over HTTPS (`X-Forwarded-Proto`). Set `1` to force it. |
+| `COOKIE_SECURE` | The session cookie (default: automatic). It is marked `Secure` automatically when the request arrives over HTTPS (`X-Forwarded-Proto`). Set `1` to force it. |
 
 ## DataHub connection (Settings tab)
 
