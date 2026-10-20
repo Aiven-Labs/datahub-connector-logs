@@ -1,17 +1,35 @@
 # Configuration
 
-The app is configured entirely through environment variables. With Docker Compose they come from a `.env` file next to `docker-compose.yml`; copy [`.env.example`](../.env.example) to start. Never commit `.env` (it is in `.gitignore`).
+The app needs only a handful of environment variables to start (database, encryption key, admin login). The **DataHub connection** (GMS URL, token, Kafka address and certificates) is entered in the app's **Settings** tab and stored encrypted in Postgres, see below. With Docker Compose they come from a `.env` file next to `docker-compose.yml`; copy [`.env.example`](../.env.example) to start. Never commit `.env` (it is in `.gitignore`).
 
 ## Required
 
 | Variable | Description |
 |---|---|
-| `GMS_URL` | URL of DataHub's backend (GMS), for example `https://datahub-gms.example.com`. The app uses it for GraphQL and for the Avro schema registry. This is not the web UI URL. |
-| `DATAHUB_TOKEN` | DataHub personal access token (*Settings → Access Tokens*). Its user needs the **Manage Ingestion** privilege; without it DataHub returns empty results instead of an error and sources show as `(unknown source)`. |
-| `KAFKA_BOOTSTRAP` | `host:port` of the Kafka cluster DataHub publishes to. On Aiven use the private port inside the VPC, or the public port that accepts client certificates from outside. |
-| `KAFKA_CA`, `KAFKA_CERT`, `KAFKA_KEY` | mTLS material for that cluster. Each value is either a **file path** (default `/certs/ca.pem`, `/certs/service.cert`, `/certs/service.key`, from the `./certs` mount in Compose) or the **PEM text itself**, which is how container platforms usually pass secrets. |
-| `APP_ENCRYPTION_KEY` | Fernet key that encrypts integration credentials in Postgres. Generate with `python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`. Comma-separate several keys to rotate; the first one encrypts, all can decrypt. **Back it up**: without it saved credentials can't be read. |
+| `DATABASE_URL` | Postgres connection URI (see below). Optional with the bundled Compose database. |
+| `APP_ENCRYPTION_KEY` | Fernet key that encrypts integration credentials and the DataHub connection settings in Postgres. Generate with `python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`. Comma-separate several keys to rotate; the first one encrypts, all can decrypt. **Back it up**: without it saved credentials can't be read. |
 | `ADMIN_USER`, `ADMIN_PASSWORD` | The UI login. The account is created or updated on every start, so changing the password here resets it. Minimum 8 characters. |
+
+## DataHub connection (Settings tab)
+
+On first start the app opens the **Settings** tab. Fill in:
+
+| Field | Description |
+|---|---|
+| DataHub URL (GMS) | URL of DataHub's backend, for example `https://datahub-gms.example.com`. Used for GraphQL and the Avro schema registry. This is not the web UI URL. |
+| Access token | DataHub personal access token (*Settings → Access Tokens*). Its user needs the **Manage Ingestion** privilege; without it DataHub returns empty results instead of an error and sources show as `(unknown source)`. |
+| Bootstrap servers | `host:port` of the Kafka cluster DataHub publishes to. On Aiven use the private port inside the VPC, or the public port that accepts client certificates from outside. |
+| CA / client certificate / client key | Paste the PEM text from Aiven's *Connection information* (`ca.pem`, `service.cert`, `service.key`). |
+
+**Test connection** checks both DataHub (including the Manage Ingestion privilege) and Kafka (including that the topic is visible) before you save. **Save** stores everything encrypted in Postgres; the consumer reconnects within a few seconds. The token and key are never sent back to the browser: leave those fields empty to keep the saved value.
+
+The same settings can be provided as environment variables instead, which is handy for automated installs. Saved values win over the variables, and a blank field falls back to the variable.
+
+| Variable | Setting |
+|---|---|
+| `GMS_URL`, `DATAHUB_TOKEN` | DataHub URL and token |
+| `KAFKA_BOOTSTRAP` | Bootstrap servers |
+| `KAFKA_CA`, `KAFKA_CERT`, `KAFKA_KEY` | Certificates: each is the PEM text or a **file path** (for example a volume you mount at `/certs`; the file must be readable by uid 10001) |
 
 ## Database
 

@@ -76,4 +76,4 @@ docker compose -f docker-compose.yml -f docker-compose.dev.yml exec kafka /opt/k
 
 - Keep it small. `main.py` and `sinks.py` are deliberately plain: no ORM, no framework beyond FastAPI.
 - A change to delivery or parsing logic gets a check in `app/tests.py`.
-- Don't commit `.env` or anything under `certs/`.
+- Don't commit `.env` or any certificates.

@@ -1,6 +1,6 @@
-"""Run: docker compose run --rm --no-deps -e GMS_URL=x -e DATAHUB_TOKEN=x -e KAFKA_BOOTSTRAP=x -e DATABASE_URL=x -e APP_ENCRYPTION_KEY=$KEY app python tests.py"""
+"""Run: docker compose run --rm --no-deps -e DATABASE_URL=x -e APP_ENCRYPTION_KEY=$KEY app python tests.py"""
 import sinks
-from main import check_password, clean_config, dec, enc, hash_password, summarize
+from main import check_password, clean_config, dec, enc, hash_password, kafka_conf, summarize
 
 # --- failure summary picks the real error ---
 assert summarize('x\n  File "a"\ndatahub.PipelineInitError: Failed to configure: boom\n\n') == \
@@ -46,4 +46,9 @@ assert "SECRET" not in tok and dec(tok) == {"api_key": "SECRET"}
 assert dec("not-a-token") == {}
 h = hash_password("pw")
 assert "pw" not in h and check_password("pw", h) and not check_password("nope", h)
+# --- Kafka client config: PEM text or file path, per value ---
+conf = kafka_conf({"kafka_bootstrap": "h:1", "kafka_ca": "-----BEGIN CERTIFICATE-----\nx\n-----END CERTIFICATE-----",
+                   "kafka_cert": "/certs/service.cert", "kafka_key": ""})
+assert conf["ssl.ca.pem"].endswith("\n") and conf["ssl.certificate.location"] == "/certs/service.cert"
+assert "ssl.key.pem" not in conf and "ssl.key.location" not in conf
 print("ok")

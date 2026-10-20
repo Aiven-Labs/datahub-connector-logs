@@ -27,15 +27,15 @@ flowchart LR
 
 You need Docker with Compose, a DataHub with an access token, and the connection details of the Kafka cluster DataHub uses.
 
-1. **Collect the DataHub details.**
-   - `GMS_URL`: the URL of DataHub's backend (GMS), not the web UI.
-   - `DATAHUB_TOKEN`: in DataHub, *Settings → Access Tokens → Generate new token*. The token's user needs the **Manage Ingestion** privilege.
-2. **Get access to DataHub's Kafka.** On Aiven, download `ca.pem`, `service.cert` and `service.key` from the Kafka service's *Connection information* and put them in `./certs/`. You also need the service host and port.
+1. **Collect the DataHub details** (you'll enter them in the app in step 4).
+   - The URL of DataHub's backend (GMS), not the web UI.
+   - An access token: in DataHub, *Settings → Access Tokens → Generate new token*. Its user needs the **Manage Ingestion** privilege.
+2. **Get access to DataHub's Kafka.** On Aiven, open the Kafka service's *Connection information* and keep `ca.pem`, `service.cert`, `service.key`, plus the service host and port.
 3. **Configure.**
 
    ```bash
    cp .env.example .env
-   # fill in GMS_URL, DATAHUB_TOKEN, KAFKA_BOOTSTRAP, ADMIN_PASSWORD
+   # set ADMIN_PASSWORD
    python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'   # paste into APP_ENCRYPTION_KEY
    ```
 
@@ -47,7 +47,7 @@ You need Docker with Compose, a DataHub with an access token, and the connection
    docker compose up -d --build
    ```
 
-5. Open <http://localhost:8000> and sign in with `ADMIN_USER` / `ADMIN_PASSWORD`.
+5. Open <http://localhost:8000>, sign in with `ADMIN_USER` / `ADMIN_PASSWORD`, and fill in the **Settings** tab: DataHub URL and token, Kafka host and port, and the PEM text of the CA, client certificate and key. **Test connection**, then **Save**.
 
 On first start the app replays what is still in the Kafka topic (about the last 24 hours on Aiven) so the Runs tab fills up straight away.
 

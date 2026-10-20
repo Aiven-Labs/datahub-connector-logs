@@ -25,7 +25,7 @@ The topic holds events for every entity type. The app keeps only `entityType = d
 
 Details that matter:
 
-- **Wire format.** Messages are Avro in Confluent wire format (magic byte, 4-byte schema id, payload). Schemas are fetched from the schema registry that DataHub serves at `GMS_URL/schema-registry/api/schemas/ids/{id}`, authenticated with `DATAHUB_TOKEN`, and cached.
+- **Wire format.** Messages are Avro in Confluent wire format (magic byte, 4-byte schema id, payload). Schemas are fetched from the schema registry that DataHub serves at `<GMS URL>/schema-registry/api/schemas/ids/{id}`, authenticated with the access token from Settings, and cached.
 - **Ordering.** All events for one run share a Kafka key (the run URN), so they land in one partition and arrive in order. The last event seen is the newest.
 - **Source names.** Events only contain the source URN. The app resolves names through the GraphQL `listIngestionSources` query (cached for 30 seconds). If the source is gone or the input event already expired from Kafka, it asks DataHub for that run individually, and otherwise shows `(unknown source)`.
 - **Commit after write.** Kafka offsets are committed only after Postgres has the data, so a crash re-reads the batch instead of losing it. Writes are upserts, so re-reading is harmless.

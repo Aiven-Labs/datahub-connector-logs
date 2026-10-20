@@ -13,7 +13,7 @@ Ingestion logs can contain hostnames, file paths, table names and sometimes conn
 | Integration credentials (Datadog API key, Kafka certificates and passwords, OpenSearch password) | `destinations.config` in Postgres | Encrypted with Fernet (AES-128-CBC + HMAC-SHA256) using `APP_ENCRYPTION_KEY`, which is never stored in the database. A database dump or backup does not reveal them. The API never returns secret values. |
 | Admin password | `users` table | scrypt hash. The plain value only exists in your environment. |
 | Sessions | `sessions` table | Random 256-bit tokens, stored as SHA-256 hashes, `HttpOnly` + `SameSite=Strict` cookie, 7-day lifetime, deleted on logout. |
-| `DATAHUB_TOKEN`, Kafka mTLS material for DataHub's cluster | Environment only | Never written to the database. Use your platform's secret store. |
+| DataHub token, Kafka certificates and key for DataHub's cluster | `settings` table in Postgres (or environment variables) | Encrypted like integration credentials. The API never returns the token or the key; the certificates (public) are shown in the Settings tab. |
 | Run logs | `runs.report` in Postgres | **Not encrypted at the application level**, so they stay searchable. Rely on Postgres access control, encryption at rest (Aiven encrypts disks) and TLS in transit. |
 
 Additional measures: all `/api` routes require login, responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy`, the container runs as a non-root user, and a failed login is delayed by one second.
@@ -22,7 +22,7 @@ Additional measures: all `/api` routes require login, responses carry `Content-S
 
 - [ ] Serve the app over **HTTPS** and set `COOKIE_SECURE=1`.
 - [ ] Use a long random `ADMIN_PASSWORD` and a unique `POSTGRES_PASSWORD` (or an external Postgres with TLS, `sslmode=require`).
-- [ ] Keep `APP_ENCRYPTION_KEY`, `DATAHUB_TOKEN`, `ADMIN_PASSWORD` and the Kafka key in a secret manager, not in the image or in git.
+- [ ] Keep `APP_ENCRYPTION_KEY` and `ADMIN_PASSWORD` in a secret manager, not in the image or in git.
 - [ ] Use a Kafka user with **read-only** access to the DataHub topic, and a DataHub token of a user that only has *Manage Ingestion*.
 - [ ] Restrict network access to port 8000 (VPC, VPN, IP allow-list). Login throttling is only a one-second delay per attempt; real rate limiting belongs in a reverse proxy.
 - [ ] Do not expose Postgres publicly.
@@ -40,7 +40,7 @@ Additional measures: all `/api` routes require login, responses carry `Content-S
 
 If the key is lost or wrong, integrations appear with empty credentials (a warning is logged). Enter the credentials again and save.
 
-**`DATAHUB_TOKEN` / Kafka certificates**: replace them in the environment and restart. The consumer reconnects.
+**DataHub token / Kafka certificates**: enter the new values in the Settings tab and save. The consumer reconnects by itself.
 
 **Destination credentials**: edit the integration, enter the new value and save.
 

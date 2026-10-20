@@ -6,7 +6,7 @@ Start with the logs: `docker compose logs -f app`. The status chip in the page h
 
 | Message | Cause |
 |---|---|
-| `Missing required environment variables: ...` | The listed variables aren't set on the container. On a hosting platform they must be added to the application's environment; a `.env` file is only read by Docker Compose. See [Configuration](configuration.md). |
+| `Missing required environment variables: ...` | Only `DATABASE_URL` and `APP_ENCRYPTION_KEY` are required to start. The listed variables aren't set on the container. On a hosting platform they must be added to the application's environment; a `.env` file is only read by Docker Compose. See [Configuration](configuration.md). |
 | `APP_ENCRYPTION_KEY missing or invalid` | Generate a key with the command in the message; it must be a Fernet key (44 characters). |
 | `No users yet: set ADMIN_USER and ADMIN_PASSWORD` | First start without an admin account configured. |
 | `ADMIN_PASSWORD must be at least 8 characters` | Use a longer password. |
@@ -19,10 +19,11 @@ Use `ADMIN_USER` and `ADMIN_PASSWORD` from your `.env`. The account is recreated
 ## The Runs tab is empty
 
 1. Look at the header chip. A red **Kafka consumer error** points at the cause:
-   - `SSL`/`certificate` errors: wrong or unreadable `KAFKA_CA`/`KAFKA_CERT`/`KAFKA_KEY`. With Compose and a non-root container, certificate files must be readable (`chmod 644`) or passed as PEM text.
+   - `Not configured yet`: finish the **Settings** tab.
+   - `SSL`/`certificate` errors: wrong CA, certificate or key in Settings (paste the full PEM including the `-----BEGIN` lines). **Test connection** in Settings shows the exact error.
    - `Failed to resolve` / timeouts: the Kafka host or port is wrong or not reachable from where the app runs (private port needs the VPC; public access must be enabled on the service).
    - `Subscribed topic not available` / authorization errors: the Kafka user needs read access to `MetadataChangeLog_Versioned_v1` and to the consumer group.
-   - `HTTP Error 401`/`403` from the schema registry: `DATAHUB_TOKEN` is invalid or expired.
+   - `HTTP Error 401`/`403` from the schema registry: the access token in Settings is invalid or expired.
 2. If there is no error but nothing arrives, DataHub may not be producing events yet. Trigger an ingestion run and watch the chip's *last event* time.
 3. The filter might hide the rows: the default is *Problems only*, and *Hide sources* is remembered in the browser. Switch to *All runs* and clear *Hide sources*.
 

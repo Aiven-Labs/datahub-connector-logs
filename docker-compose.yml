@@ -9,8 +9,6 @@ services:
     environment:
       # compose also reads DATABASE_URL from .env, so pointing at Aiven PG needs no edit here
       DATABASE_URL: ${DATABASE_URL:-postgresql://datahub:${POSTGRES_PASSWORD:-datahub}@db:5432/datahublogs}
-    volumes:
-      - ./certs:/certs:ro  # local dev only; on Aiven pass the KAFKA_* values as PEM text instead
     depends_on:
       db: {condition: service_healthy}
     healthcheck:

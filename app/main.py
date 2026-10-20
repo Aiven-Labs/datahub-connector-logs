@@ -16,6 +16,7 @@ from contextlib import asynccontextmanager
 import fastavro
 import psycopg
 from confluent_kafka import Consumer
+from confluent_kafka.admin import AdminClient
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from fastapi import Body, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
@@ -28,18 +29,16 @@ import sinks
 log = logging.getLogger("app")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-_missing = [k for k in ("GMS_URL", "DATAHUB_TOKEN", "KAFKA_BOOTSTRAP", "DATABASE_URL", "APP_ENCRYPTION_KEY") if not os.environ.get(k)]
+_missing = [k for k in ("DATABASE_URL", "APP_ENCRYPTION_KEY") if not os.environ.get(k)]
 if _missing:  # one clear message instead of a KeyError traceback per variable
     raise SystemExit("Missing required environment variables: " + ", ".join(_missing) + " (see docs/configuration.md)")
 
-GMS_URL = os.environ["GMS_URL"].rstrip("/")  # GraphQL + the Avro schema registry live on GMS
-TOKEN = os.environ["DATAHUB_TOKEN"]
 TOPIC = os.environ.get("MCL_TOPIC", "MetadataChangeLog_Versioned_v1")
 GROUP = os.environ.get("KAFKA_GROUP", "datahub-logs-app")
 DATABASE_URL = os.environ["DATABASE_URL"]  # e.g. postgresql://user:pass@host:5432/db?sslmode=require
 SESSION_MS = 7 * 86400_000
-RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))  # 0 = keep runs forever
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"  # set when served over https
+RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))  # 0 = keep runs forever
 STUCK_MS = int(os.environ.get("STUCK_HOURS", "3")) * 3600_000
 MAX_ATTEMPTS = 5
 RUNNING = ("RUNNING", "PENDING")
@@ -101,6 +100,7 @@ def init_db():
         CREATE TABLE IF NOT EXISTS deliveries (
             dest_id INTEGER, run_urn TEXT, state TEXT, attempts INTEGER, next_try_ms BIGINT,
             error TEXT, sent_ms BIGINT, PRIMARY KEY (dest_id, run_urn));
+        CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL, updated_ms BIGINT NOT NULL);
         CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, expires_ms BIGINT NOT NULL);
         """)
@@ -118,15 +118,44 @@ def now_ms():
     return int(time.time() * 1000)
 
 
+# ---------- connection settings: entered in the UI, stored encrypted; env vars are the fallback ----------
+SETTING_ENV = {"gms_url": "GMS_URL", "token": "DATAHUB_TOKEN", "kafka_bootstrap": "KAFKA_BOOTSTRAP",
+               "kafka_ca": "KAFKA_CA", "kafka_cert": "KAFKA_CERT", "kafka_key": "KAFKA_KEY"}
+SETTING_SECRETS = {"token", "kafka_key"}
+_settings = {"at": 0, "val": None}
+
+
+def settings():
+    """Effective connection settings (saved values win over env vars), cached for a few seconds so every
+    replica notices a change. `_v` changes whenever the saved settings do."""
+    if time.time() - _settings["at"] > 5:
+        with db() as c:
+            row = c.execute("SELECT value, updated_ms FROM settings WHERE key = 'datahub'").fetchone()
+        saved = dec(row["value"]) if row else {}
+        val = {k: (saved.get(k) or os.environ.get(env, "")).strip() for k, env in SETTING_ENV.items()}
+        val["gms_url"] = val["gms_url"].rstrip("/")
+        val["configured"] = all(val.values())
+        val["_v"] = row["updated_ms"] if row else 0
+        _settings.update(at=time.time(), val=val)
+    return _settings["val"]
+
+
+def merged_settings(body):
+    """Form values, with blank fields (e.g. secrets that are never sent back) taken from what is already set."""
+    cur = settings()
+    return {k: (body.get(k) or "").strip() or cur[k] for k in SETTING_ENV}
+
+
 # ---------- DataHub access (schema registry + GraphQL on GMS) ----------
-def gms(path, body=None):
-    req = urllib.request.Request(GMS_URL + path, json.dumps(body).encode() if body else None,
-                                 {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"})
+def gms(path, body=None, s=None):
+    s = s or settings()
+    req = urllib.request.Request(s["gms_url"] + path, json.dumps(body).encode() if body else None,
+                                 {"Authorization": f"Bearer {s['token']}", "Content-Type": "application/json"})
     return json.loads(urllib.request.urlopen(req, timeout=30).read())
 
 
-def gql(query, variables=None):
-    r = gms("/api/graphql", {"query": query, "variables": variables or {}})
+def gql(query, variables=None, s=None):
+    r = gms("/api/graphql", {"query": query, "variables": variables or {}}, s)
     if r.get("errors"):
         raise RuntimeError(json.dumps(r["errors"])[:300])
     return r["data"]
@@ -206,41 +235,67 @@ def resolve_sources(c):
         c.commit()  # don't hold a transaction open across the next HTTP call
 
 
-def kafka_conf():
-    """Aiven mTLS. Each KAFKA_* value is a file path, or the PEM itself (as Aiven app integrations provide)."""
-    conf = {"bootstrap.servers": os.environ["KAFKA_BOOTSTRAP"], "security.protocol": "SSL"}
-    for env, as_file, as_pem in (("KAFKA_CA", "ssl.ca.location", "ssl.ca.pem"),
-                                 ("KAFKA_CERT", "ssl.certificate.location", "ssl.certificate.pem"),
-                                 ("KAFKA_KEY", "ssl.key.location", "ssl.key.pem")):
-        v = os.environ.get(env, "")
-        if v:
-            conf[as_pem if v.lstrip().startswith("-----BEGIN") else as_file] = v
+def kafka_conf(s):
+    """Aiven mTLS. Each cert value is the PEM text, or a file path (as the env vars may still provide)."""
+    conf = {"bootstrap.servers": s["kafka_bootstrap"], "security.protocol": "SSL"}
+    for key, as_file, as_pem in (("kafka_ca", "ssl.ca.location", "ssl.ca.pem"),
+                                 ("kafka_cert", "ssl.certificate.location", "ssl.certificate.pem"),
+                                 ("kafka_key", "ssl.key.location", "ssl.key.pem")):
+        v = s[key]
+        if v.startswith("-----BEGIN"):
+            conf[as_pem] = v + "\n"
+        elif v:
+            conf[as_file] = v
     return conf
 
 
 def consumer():
-    c = Consumer({**kafka_conf(), "group.id": GROUP, "auto.offset.reset": "earliest", "enable.auto.commit": False,
-                  "fetch.message.max.bytes": 8 << 20, "max.partition.fetch.bytes": 8 << 20})
-    c.subscribe([TOPIC])
+    """Runs for the life of the process; waits until the connection settings are complete and restarts
+    the Kafka consumer whenever they change."""
     while True:
         try:
-            batch = c.consume(200, timeout=1.0)
-            if not batch:
-                continue
-            with db() as conn:
-                for m in batch:
-                    if m.error():
-                        log.error("consume: %s", m.error())
-                    elif m.value():
-                        apply_event(conn, avro_decode(m.value()), m.timestamp()[1])
-                state["last_event_ms"] = max(m.timestamp()[1] for m in batch if not m.error())
-                resolve_sources(conn)
-            c.commit(asynchronous=False)  # only after the database has the data
-            state["consumer_error"] = None
-        except Exception as e:  # e.g. GMS briefly down; uncommitted batch is re-read after restart
+            s = settings()
+            if s["configured"]:
+                consume(s)
+            else:
+                state["consumer_error"] = "Not configured yet: open the Settings tab"
+                time.sleep(5)
+        except Exception as e:  # e.g. bad certificate or bootstrap address, database briefly down
             log.exception("consumer failed")
             state["consumer_error"] = str(e)
             time.sleep(5)
+
+
+def consume(s):
+    c = Consumer({**kafka_conf(s), "group.id": GROUP, "auto.offset.reset": "earliest", "enable.auto.commit": False,
+                  "fetch.message.max.bytes": 8 << 20, "max.partition.fetch.bytes": 8 << 20})
+    c.subscribe([TOPIC])
+    state["consumer_error"] = None  # connection problems show up again via consume() errors
+    try:
+        while settings()["_v"] == s["_v"]:
+            try:
+                batch = c.consume(200, timeout=1.0)
+                for m in batch:
+                    if m.error():
+                        log.error("consume: %s", m.error())
+                        state["consumer_error"] = str(m.error())
+                msgs = [m for m in batch if not m.error()]
+                if not msgs:
+                    continue
+                with db() as conn:
+                    for m in msgs:
+                        if m.value():
+                            apply_event(conn, avro_decode(m.value()), m.timestamp()[1])
+                    state["last_event_ms"] = max(m.timestamp()[1] for m in msgs)
+                    resolve_sources(conn)
+                c.commit(asynchronous=False)  # only after the database has the data
+                state["consumer_error"] = None
+            except Exception as e:  # e.g. GMS briefly down; uncommitted batch is re-read after restart
+                log.exception("consumer failed")
+                state["consumer_error"] = str(e)
+                time.sleep(5)
+    finally:
+        c.close()  # settings changed: reconnect with the new ones
 
 
 # ---------- delivery: postgres -> destinations ----------
@@ -436,6 +491,52 @@ def health():
     with db() as c:  # consumer state resets on restart; the index remembers
         last = c.execute("SELECT MAX(updated_ms) AS m FROM runs").fetchone()["m"]
     return {**state, "last_event_ms": state["last_event_ms"] or last}
+
+
+# ---------- connection settings API (the setup wizard) ----------
+def public_settings():
+    s = settings()
+    return {**{k: ("" if k in SETTING_SECRETS else s[k]) for k in SETTING_ENV},
+            "secrets_set": sorted(k for k in SETTING_SECRETS if s[k]), "configured": s["configured"]}
+
+
+@app.get("/api/settings")
+def get_settings():
+    return public_settings()
+
+
+@app.put("/api/settings")
+def put_settings(body: dict = Body(...)):
+    new = merged_settings(body)
+    if new["gms_url"] and not new["gms_url"].startswith(("http://", "https://")):
+        raise HTTPException(400, "DataHub URL must start with https:// (or http://)")
+    with db() as c:  # store what the form has; blank fields keep falling back to the env vars
+        c.execute("""INSERT INTO settings VALUES ('datahub', %s, %s) ON CONFLICT (key)
+                     DO UPDATE SET value = excluded.value, updated_ms = excluded.updated_ms""", (enc(new), now_ms()))
+    _settings["at"] = 0
+    return public_settings()
+
+
+@app.post("/api/settings/test")
+def test_settings(body: dict = Body(...)):
+    """Check DataHub and its Kafka with the form's values (blank ones reuse what is saved)."""
+    s, out = merged_settings(body), {}
+    try:
+        me = gql("{ me { corpUser { urn } platformPrivileges { manageIngestion } } }", s=s)["me"]
+        if me["platformPrivileges"]["manageIngestion"]:
+            out["datahub"] = {"ok": True, "detail": f"Connected as {me['corpUser']['urn']}"}
+        else:
+            out["datahub"] = {"ok": False, "detail": f"Connected as {me['corpUser']['urn']}, but this user lacks the "
+                              "Manage Ingestion privilege, so source names can't be resolved"}
+    except Exception as e:
+        out["datahub"] = {"ok": False, "detail": str(e)[:300]}
+    try:
+        topics = AdminClient(kafka_conf(s)).list_topics(timeout=10).topics
+        out["kafka"] = ({"ok": True, "detail": f"Connected; topic {TOPIC} found"} if TOPIC in topics else
+                        {"ok": False, "detail": f"Connected, but topic {TOPIC} does not exist (or this user can't see it)"})
+    except Exception as e:
+        out["kafka"] = {"ok": False, "detail": str(e)[:300]}
+    return out
 
 
 # ---------- destinations API ----------

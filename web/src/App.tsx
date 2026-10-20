@@ -1,9 +1,10 @@
-import { Box, Button, StatusChip, Tabs, Typography } from '@aivenio/aquarium'
+import { Alert, Box, Button, StatusChip, Tabs, Typography } from '@aivenio/aquarium'
 import { useEffect, useState } from 'react'
 import { api, fmtTime, type Health } from './api'
 import { Integrations } from './Integrations'
 import { Login } from './Login'
 import { Runs } from './Runs'
+import { Settings } from './Settings'
 
 export function App() {
   const [user, setUser] = useState<string | null | undefined>(undefined) // undefined = still checking
@@ -18,9 +19,13 @@ export function App() {
 }
 
 function Main({ user }: { user: string }) {
-  const [tab, setTab] = useState<number | string>(location.hash === '#integrations' ? 'integrations' : 'runs')
+  const [tab, setTab] = useState<number | string>(['#integrations', '#settings'].includes(location.hash) ? location.hash.slice(1) : 'runs')
   const pick = (t: number | string) => { setTab(t); history.replaceState(null, '', '#' + t) } // survives a refresh
   const [health, setHealth] = useState<Health>({})
+  const [configured, setConfigured] = useState(true)
+  useEffect(() => { // first run: start in the setup wizard
+    api('/api/settings').then((s) => { setConfigured(s.configured); if (!s.configured && !location.hash) pick('settings') }).catch(() => {})
+  }, [])
   useEffect(() => {
     const load = () => api<Health>('/api/health').then(setHealth).catch(() => {})
     load()
@@ -48,9 +53,15 @@ function Main({ user }: { user: string }) {
           </Button.Ghost>
         </Box.Flex>
       </Box.Flex>
+      {!configured && tab !== 'settings' && (
+        <Box marginBottom="4"><Alert type="warning" title="Setup is not finished" action={{ text: 'Open settings', onClick: () => pick('settings') }}>
+          Connect the app to DataHub and its Kafka to start collecting runs.
+        </Alert></Box>
+      )}
       <Tabs value={tab} onChange={pick}>
         <Tabs.Tab title="Runs" value="runs"><Runs /></Tabs.Tab>
         <Tabs.Tab title="Integrations" value="integrations"><Integrations /></Tabs.Tab>
+        <Tabs.Tab title="Settings" value="settings"><Settings onConfigured={setConfigured} /></Tabs.Tab>
       </Tabs>
     </Box>
   )

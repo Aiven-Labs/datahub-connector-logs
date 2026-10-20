@@ -7,7 +7,7 @@ The app is a single container image plus Postgres. It keeps nothing on its own d
 | Target | Why | Typical port |
 |---|---|---|
 | **DataHub's Kafka** | Reads run events. Needs read access to the `MetadataChangeLog_Versioned_v1` topic and to its consumer group. | Aiven private port inside the VPC; the public port with client certificates from outside |
-| **DataHub GMS** (`GMS_URL`) | Schema registry and GraphQL for source names. | 443 |
+| **DataHub GMS** (the URL in Settings) | Schema registry and GraphQL for source names. | 443 |
 | **Postgres** (`DATABASE_URL`) | All app state. | 5432 or your provider's port |
 | **Your destinations** | Datadog intake, your Kafka, OpenSearch. | per destination |
 
@@ -18,10 +18,12 @@ Inbound, users reach the app on port **8000** (HTTP). Put TLS in front of it.
 The repository's `docker-compose.yml` runs the app and a bundled Postgres.
 
 ```bash
-cp .env.example .env     # fill it in, see configuration.md
+cp .env.example .env     # set ADMIN_PASSWORD and APP_ENCRYPTION_KEY, see configuration.md
 docker compose up -d --build
 docker compose logs -f app
 ```
+
+Then open <http://localhost:8000>, sign in and complete the **Settings** tab (DataHub URL and token, Kafka address and certificates).
 
 Before using it beyond a trial:
 
@@ -30,13 +32,9 @@ Before using it beyond a trial:
 - The `db` service is not published on the host; keep it that way. `docker-compose.yml` contains only the app and Postgres. The app does not run or need a Kafka of its own: DataHub's Kafka and your destinations are external services reached through settings. `docker-compose.dev.yml` is a local testing helper; never deploy it.
 - Back up the `pg-data` volume (or use `pg_dump`) and keep `APP_ENCRYPTION_KEY` somewhere safe.
 
-### Certificates
-
-With Compose, mTLS files are read from `./certs`, mounted at `/certs`. The container runs as a non-root user (uid 10001), so the files must be readable by it: `chmod 644 certs/*` on Linux hosts, or avoid files altogether by pasting the PEM text into `KAFKA_CA`, `KAFKA_CERT` and `KAFKA_KEY`.
-
 ## Importing the Compose file into a platform
 
-`docker-compose.yml` defines two services, `app` and `db` (Postgres). That is everything the application itself needs. There is no Kafka service: DataHub's Kafka and your destinations are existing external systems that the app connects to using the settings in `.env`.
+`docker-compose.yml` defines two services, `app` and `db` (Postgres). That is everything the application itself needs. There is no Kafka service: DataHub's Kafka and your destinations are existing external systems that the app connects to using the details you enter in the Settings tab.
 
 Platforms that read a Compose file (including Aiven's application deployment) turn each service into a managed resource: `app` becomes the application and `db` becomes a managed PostgreSQL. Whatever the platform generates for the database, make sure the app receives its connection string as `DATABASE_URL`. If you would rather use an existing Postgres, delete the `db` service and the app's `depends_on` from the file before importing and set `DATABASE_URL` yourself.
 
@@ -46,8 +44,8 @@ Run the image in the same VPC as the DataHub service's Kafka so the private Kafk
 
 1. **Postgres.** Create (or reuse) an Aiven for PostgreSQL service in that VPC. A small plan is enough: the app runs a handful of short queries and stores run logs. Use its service URI as `DATABASE_URL` (it already includes `sslmode=require`).
 2. **Image.** Build the image from this repository (`docker build -f app/Dockerfile -t datahub-connector-logs .`), push it to a registry the platform can pull from, and run it as a container listening on port 8000.
-3. **Environment.** Set the variables from [Configuration](configuration.md). Pass `KAFKA_CA`, `KAFKA_CERT` and `KAFKA_KEY` as PEM text (Aiven's service credentials), `KAFKA_BOOTSTRAP` as the **private** `host:port`, `COOKIE_SECURE=1`, and keep `APP_ENCRYPTION_KEY`, `DATAHUB_TOKEN` and `ADMIN_PASSWORD` in your platform's secret store.
-4. **Kafka user.** Use a service user with read access to the DataHub topic. DataHub's own service user works; a dedicated read-only user is better.
+3. **Environment.** Set only `DATABASE_URL`, `APP_ENCRYPTION_KEY`, `ADMIN_USER`, `ADMIN_PASSWORD` and `COOKIE_SECURE=1` (see [Configuration](configuration.md)), keeping the secrets in your platform's secret store.
+4. **Connect to DataHub.** Open the app, sign in and fill in the **Settings** tab: the GMS URL, an access token, the **private** Kafka `host:port` and the PEM text of the CA, client certificate and key from the Kafka service's *Connection information*. Press **Test connection**, then **Save**. Use a Kafka service user with read access to the DataHub topic. DataHub's own service user works; a dedicated read-only user is better.
 5. **Networking.** Expose port 8000 through HTTPS only. The app has a single admin login, so also consider restricting it to your network.
 6. **Health check.** Point the platform's health check at `GET /healthz` (returns `{"ok": true}`, no login).
 
