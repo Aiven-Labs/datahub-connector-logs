@@ -136,7 +136,7 @@ def now_ms():
 # ---------- connection settings: entered in the UI, stored encrypted; env vars are the fallback ----------
 SETTING_ENV = {"gms_url": "GMS_URL", "token": "DATAHUB_TOKEN", "kafka_bootstrap": "KAFKA_BOOTSTRAP",
                "kafka_ca": "KAFKA_CA", "kafka_cert": "KAFKA_CERT", "kafka_key": "KAFKA_KEY"}
-SETTING_SECRETS = {"token", "kafka_key"}
+SETTING_SECRETS = {"token", "kafka_ca", "kafka_cert", "kafka_key"}  # write-only: never sent back to the browser
 _settings = {"at": 0, "val": None}
 
 

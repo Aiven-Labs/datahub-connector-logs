@@ -23,7 +23,7 @@ On first start the app opens the **Settings** tab. Fill in:
 | Bootstrap servers | `host:port` of the Kafka cluster DataHub publishes to. On Aiven use the private port inside the VPC, or the public port that accepts client certificates from outside. |
 | CA / client certificate / client key | Paste the PEM text from Aiven's *Connection information* (`ca.pem`, `service.cert`, `service.key`). |
 
-**Test connection** checks both DataHub (including the Manage Ingestion privilege) and Kafka (including that the topic is visible) before you save. **Save** stores everything encrypted in Postgres; the consumer reconnects within a few seconds. The token and key are never sent back to the browser: leave those fields empty to keep the saved value.
+**Test connection** checks both DataHub (including the Manage Ingestion privilege) and Kafka (including that the topic is visible) before you save. **Save** stores everything encrypted in Postgres; the consumer reconnects within a few seconds. The token and certificates are never sent back to the browser, and pasted text is masked (use *Show pasted values* to check it): leave a field empty to keep the saved value.
 
 The same settings can be provided as environment variables instead, which is handy for automated installs. Saved values win over the variables, and a blank field falls back to the variable.
 

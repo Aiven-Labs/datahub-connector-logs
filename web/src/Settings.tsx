@@ -12,6 +12,7 @@ export function Settings({ onConfigured }: { onConfigured: (configured: boolean)
   const [checks, setChecks] = useState<{ datahub: Check; kafka: Check } | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
   const [keyInDb, setKeyInDb] = useState(false)
+  const [show, setShow] = useState(false)
   const [busy, setBusy] = useState<'test' | 'save' | null>(null)
 
   const apply = (s: any) => { setForm({ ...EMPTY, ...s }); setSecretsSet(s.secrets_set); setKeyInDb(s.key_in_db); onConfigured(s.configured) }
@@ -48,9 +49,11 @@ export function Settings({ onConfigured }: { onConfigured: (configured: boolean)
         <Box marginTop="4"><Typography.Heading>2. DataHub's Kafka</Typography.Heading></Box>
         <Input labelText="Bootstrap servers" description="host:port of the Kafka cluster DataHub publishes to. Inside the same VPC use the private port."
           placeholder="kafka-example.aivencloud.com:12345" value={form.kafka_bootstrap} onChange={(e) => set({ kafka_bootstrap: e.target.value })} />
-        <Textarea labelText="CA certificate (PEM)" rows={4} placeholder="-----BEGIN CERTIFICATE-----" value={form.kafka_ca} onChange={(e) => set({ kafka_ca: e.target.value })} />
-        <Textarea labelText="Client certificate (PEM)" rows={4} placeholder="-----BEGIN CERTIFICATE-----" value={form.kafka_cert} onChange={(e) => set({ kafka_cert: e.target.value })} />
-        <Textarea labelText="Client key (PEM)" rows={4} placeholder={secret('kafka_key') ?? '-----BEGIN PRIVATE KEY-----'} value={form.kafka_key} onChange={(e) => set({ kafka_key: e.target.value })} />
+        {([['kafka_ca', 'CA certificate (PEM)', 'CERTIFICATE'], ['kafka_cert', 'Client certificate (PEM)', 'CERTIFICATE'], ['kafka_key', 'Client key (PEM)', 'PRIVATE KEY']] as const).map(([k, label, kind]) => (
+          <Textarea key={k} labelText={label} rows={4} className={show ? undefined : 'mask'} autoComplete="off" spellCheck={false}
+            placeholder={secret(k) ?? `-----BEGIN ${kind}-----`} value={form[k]} onChange={(e) => set({ [k]: e.target.value })} />
+        ))}
+        <Box.Flex><Button.Ghost onClick={() => setShow(!show)}>{show ? 'Hide pasted values' : 'Show pasted values'}</Button.Ghost></Box.Flex>
         {checks && <Alert type={checks.kafka.ok ? 'success' : 'error'} title="Kafka">{checks.kafka.detail}</Alert>}
 
         {msg && <Alert type={msg.ok ? 'success' : 'error'}>{msg.text}</Alert>}
