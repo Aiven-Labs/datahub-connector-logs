@@ -12,7 +12,4 @@ jobs:
       - name: Build image (type-checks and builds the UI)
         run: docker build -f app/Dockerfile -t datahub-connector-logs .
       - name: Run checks
-        run: |
-          KEY=$(docker run --rm datahub-connector-logs python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
-          docker run --rm -e DATABASE_URL=x \
-            -e APP_ENCRYPTION_KEY="$KEY" datahub-connector-logs python tests.py
+        run: docker run --rm -e DATABASE_URL=x datahub-connector-logs python tests.py

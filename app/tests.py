@@ -1,6 +1,8 @@
-"""Run: docker compose run --rm --no-deps -e DATABASE_URL=x -e APP_ENCRYPTION_KEY=$KEY app python tests.py"""
+"""Run against the image, without overriding its default env: docker run --rm -e DATABASE_URL=x IMAGE python tests.py"""
+import os
+
 import sinks
-from main import check_password, clean_config, dec, enc, hash_password, kafka_conf, summarize
+from main import DEFAULTS, check_password, clean_config, dec, enc, hash_password, kafka_conf, summarize
 
 # --- failure summary picks the real error ---
 assert summarize('x\n  File "a"\ndatahub.PipelineInitError: Failed to configure: boom\n\n') == \
@@ -51,4 +53,6 @@ conf = kafka_conf({"kafka_bootstrap": "h:1", "kafka_ca": "-----BEGIN CERTIFICATE
                    "kafka_cert": "/certs/service.cert", "kafka_key": ""})
 assert conf["ssl.ca.pem"].endswith("\n") and conf["ssl.certificate.location"] == "/certs/service.cert"
 assert "ssl.key.pem" not in conf and "ssl.key.location" not in conf
+# --- the defaults baked into app/Dockerfile match the ones the app warns about ---
+assert all(os.environ[k] == v for k, v in DEFAULTS.items()), "Dockerfile ENV and main.DEFAULTS differ"
 print("ok")

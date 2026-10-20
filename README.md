@@ -43,7 +43,7 @@ You need Docker with Compose, a DataHub with an access token, and the connection
    docker compose up -d --build
    ```
 
-5. Open <http://localhost:8000>, create the admin account on the first visit, and fill in the **Settings** tab: DataHub URL and token, Kafka host and port, and the PEM text of the CA, client certificate and key. **Test connection**, then **Save**.
+5. Open <http://localhost:8000>, sign in (default `admin` / `change-me-now`, change it before exposing the app: see [Configuration](docs/configuration.md)), and fill in the **Settings** tab: DataHub URL and token, Kafka host and port, and the PEM text of the CA, client certificate and key. **Test connection**, then **Save**.
 
 On first start the app replays what is still in the Kafka topic (about the last 24 hours on Aiven) so the Runs tab fills up straight away.
 

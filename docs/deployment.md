@@ -23,7 +23,7 @@ docker compose up -d --build
 docker compose logs -f app
 ```
 
-Then open <http://localhost:8000>, create the admin account (or sign in with `ADMIN_USER`/`ADMIN_PASSWORD` if you set them) and complete the **Settings** tab (DataHub URL and token, Kafka address and certificates).
+Then open <http://localhost:8000>, sign in (default `admin` / `change-me-now`, unless you set `ADMIN_USER`/`ADMIN_PASSWORD` in `.env`) and complete the **Settings** tab (DataHub URL and token, Kafka address and certificates).
 
 Before using it beyond a trial:
 
@@ -44,8 +44,8 @@ Run the image in the same VPC as the DataHub service's Kafka so the private Kafk
 
 1. **Postgres.** Create (or reuse) an Aiven for PostgreSQL service in that VPC. A small plan is enough: the app runs a handful of short queries and stores run logs. Use its service URI as `DATABASE_URL` (it already includes `sslmode=require`).
 2. **Image.** Build the image from this repository (`docker build -f app/Dockerfile -t datahub-connector-logs .`), push it to a registry the platform can pull from, and run it as a container listening on port 8000.
-3. **Environment.** `DATABASE_URL` is injected by the Postgres integration. Nothing else is required: the app generates its encryption key on first start, and the first visitor creates the admin account. Because the Aiven URL is public, add a secret `SETUP_TOKEN` (any long random string) before the first visit, and for stronger protection set `APP_ENCRYPTION_KEY` too (see [Configuration](configuration.md)).
-4. **Connect to DataHub.** Open the app, create the admin account (enter the setup token if you set one) and fill in the **Settings** tab: the GMS URL, an access token, the **private** Kafka `host:port` and the PEM text of the CA, client certificate and key from the Kafka service's *Connection information*. Press **Test connection**, then **Save**. Use a Kafka service user with read access to the DataHub topic. DataHub's own service user works; a dedicated read-only user is better.
+3. **Environment.** `DATABASE_URL` is injected by the Postgres integration. The image brings default values for `ADMIN_USER`, `ADMIN_PASSWORD` and `APP_ENCRYPTION_KEY`, which Aiven lists under the application's environment variables. The app starts with them, but they are public: edit `ADMIN_PASSWORD` and `APP_ENCRYPTION_KEY` (mark them secret) once it is running. See [Configuration](configuration.md) for changing the key safely.
+4. **Connect to DataHub.** Open the app, sign in and fill in the **Settings** tab: the GMS URL, an access token, the **private** Kafka `host:port` and the PEM text of the CA, client certificate and key from the Kafka service's *Connection information*. Press **Test connection**, then **Save**. Use a Kafka service user with read access to the DataHub topic. DataHub's own service user works; a dedicated read-only user is better.
 5. **Networking.** Expose port 8000 through HTTPS only. The app has a single admin login, so also consider restricting it to your network.
 6. **Health check.** Point the platform's health check at `GET /healthz` (returns `{"ok": true}`, no login).
 
@@ -67,7 +67,7 @@ Tables are created if missing on start, and data and integrations survive becaus
 ## Backups and recovery
 
 - **Postgres** holds everything: runs, integrations, users. Back it up the usual way. Run history older than the Kafka retention window can't be rebuilt from DataHub, so the database is the only copy.
-- **`APP_ENCRYPTION_KEY`** (if you set it) must be backed up separately. A database backup without the key can't be used to recover credentials; you would have to re-enter them. If you didn't set it, the key is inside the database and a backup restores everything.
+- **`APP_ENCRYPTION_KEY`** must be backed up separately once you have changed it from the default. A database backup without the key can't be used to recover credentials; you would have to re-enter them.
 - **Empty database.** If you start with a fresh database, the app replays whatever Kafka still holds. To replay it again, set a new `KAFKA_GROUP`. New integrations only send runs that finish after they are created, so a replay does not flood destinations.
 
 ## Resource use

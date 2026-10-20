@@ -11,11 +11,11 @@ export function Settings({ onConfigured }: { onConfigured: (configured: boolean)
   const [secretsSet, setSecretsSet] = useState<string[]>([])
   const [checks, setChecks] = useState<{ datahub: Check; kafka: Check } | null>(null)
   const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null)
-  const [keyInDb, setKeyInDb] = useState(false)
+  const [defaults, setDefaults] = useState<string[]>([])
   const [show, setShow] = useState(false)
   const [busy, setBusy] = useState<'test' | 'save' | null>(null)
 
-  const apply = (s: any) => { setForm({ ...EMPTY, ...s }); setSecretsSet(s.secrets_set); setKeyInDb(s.key_in_db); onConfigured(s.configured) }
+  const apply = (s: any) => { setForm({ ...EMPTY, ...s }); setSecretsSet(s.secrets_set); setDefaults(s.default_secrets); onConfigured(s.configured) }
   useEffect(() => { api('/api/settings').then(apply) }, [])
 
   const set = (p: Partial<Form>) => setForm({ ...form, ...p })
@@ -36,8 +36,9 @@ export function Settings({ onConfigured }: { onConfigured: (configured: boolean)
   return (
     <Box paddingTop="5" maxWidth="4xl">
       <Box.Flex flexDirection="column" gap="4">
-        {keyInDb && <Alert type="warning" title="Encryption key is stored in the database">
-          Saved credentials are encrypted, but the key lives next to them. For stronger protection set the APP_ENCRYPTION_KEY environment variable and re-save your credentials.
+        {defaults.length > 0 && <Alert type="warning" title="Default secrets in use">
+          {defaults.join(' and ')} still {defaults.length > 1 ? 'have' : 'has'} the default value from the repository, which anyone can read. Set your own in the application's environment variables.
+          {defaults.includes('APP_ENCRYPTION_KEY') && ' To change the encryption key without losing saved credentials, set it to "NEWKEY,OLDKEY" (new first).'}
         </Alert>}
         <Typography.Heading>1. DataHub</Typography.Heading>
         <Input labelText="DataHub URL (GMS)" description="The backend URL, not the web UI. The app reads the schema registry and ingestion sources from it."

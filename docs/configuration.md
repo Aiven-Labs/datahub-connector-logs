@@ -1,16 +1,16 @@
 # Configuration
 
-The app needs only a handful of environment variables to start (database, encryption key, admin login). The **DataHub connection** (GMS URL, token, Kafka address and certificates) is entered in the app's **Settings** tab and stored encrypted in Postgres, see below. With Docker Compose they come from a `.env` file next to `docker-compose.yml`; copy [`.env.example`](../.env.example) to start. Never commit `.env` (it is in `.gitignore`).
+The app needs only a handful of environment variables to start (a database, an encryption key and an admin login), and the image ships defaults for the last two. The **DataHub connection** (GMS URL, token, Kafka address and certificates) is entered in the app's **Settings** tab and stored encrypted in Postgres, see below. With Docker Compose they come from a `.env` file next to `docker-compose.yml`; copy [`.env.example`](../.env.example) to start. Never commit `.env` (it is in `.gitignore`).
 
-## Security and login (all optional)
+## Security and login (defaults included)
 
-With none of these set, the app is fully self-configuring: it generates an encryption key on first start and the first visitor creates the admin account in the browser.
+The image sets these three variables to **public default values** (see `app/Dockerfile`) so a fresh deploy starts with no setup. They are meant to be replaced: the Settings tab shows a warning for as long as the default password or key is in use. On a platform such as Aiven they appear in the application's environment variables, where you can edit them. Change them before exposing the app, because anyone can read the defaults in the repository.
 
 | Variable | Description |
 |---|---|
-| `APP_ENCRYPTION_KEY` | Fernet key that encrypts integration credentials and the DataHub connection settings in Postgres. If unset, the app generates one on first start and stores it in the database (the Settings tab shows a warning); setting it later keeps working because the stored key is still used to read old data, and new saves use yours. Generate with `python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`. Comma-separate several keys to rotate; the first one encrypts, all can decrypt. **Back it up**: without it saved credentials can't be read. |
-| `ADMIN_USER`, `ADMIN_PASSWORD` | The UI login. When set, the account is created or updated on every start, so changing the password here resets it. Minimum 8 characters. When unset and there are no users, the sign-in page becomes a one-time **create admin account** form. |
-| `SETUP_TOKEN` | If set, creating the first admin account requires this value. Use it when the URL is public, so a stranger can't claim the account before you. Ignored once a user exists. |
+| `APP_ENCRYPTION_KEY` | Fernet key that encrypts integration credentials and the DataHub connection settings in Postgres. Default: a public key from the repository. Generate your own with `python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`. **Changing it:** set it to `NEWKEY,OLDKEY` (new first) so existing data stays readable, then re-save your integrations and Settings to re-encrypt them with the new key, and finally drop the old key. **Back it up**: without it saved credentials can't be read. |
+| `ADMIN_USER`, `ADMIN_PASSWORD` | The UI login. Defaults: `admin` / `change-me-now`. The account is created or updated on every start, so changing the password here resets it. Minimum 8 characters. |
+| `COOKIE_SECURE` | auto | The session cookie is marked `Secure` automatically when the request arrives over HTTPS (`X-Forwarded-Proto`). Set `1` to force it. |
 
 ## DataHub connection (Settings tab)
 
@@ -48,7 +48,6 @@ The same settings can be provided as environment variables instead, which is han
 | `KAFKA_GROUP` | `datahub-logs-app` | Consumer group. A new name replays the topic from the beginning. |
 | `STUCK_HOURS` | `3` | A `RUNNING`/`PENDING` run with no update for this long is shown as *stuck*. |
 | `RETENTION_DAYS` | `30` | Runs (and their logs) older than this are deleted hourly. `0` keeps everything. |
-| `COOKIE_SECURE` | auto | The session cookie is marked `Secure` automatically when the request arrives over HTTPS (`X-Forwarded-Proto`). Set `1` to force it. |
 
 ## What is *not* configured here
 

@@ -43,7 +43,7 @@ STUCK_MS = int(os.environ.get("STUCK_HOURS", "3")) * 3600_000
 MAX_ATTEMPTS = 5
 RUNNING = ("RUNNING", "PENDING")
 FAILED = ("FAILURE", "TIMEOUT", "ABORTED", "CANCELLED")
-state = {"last_event_ms": None, "consumer_error": None, "key_in_db": False}
+state = {"last_event_ms": None, "consumer_error": None}
 
 
 # ---------- postgres: the app keeps no state of its own ----------
@@ -55,26 +55,15 @@ def ph(n):
     return ",".join(["%s"] * n)
 
 
-ENV_KEYS = [k.strip() for k in os.environ.get("APP_ENCRYPTION_KEY", "").split(",") if k.strip()]
-try:  # secrets in the database are encrypted with these keys; comma-separate to rotate (first one encrypts)
-    _fernet = MultiFernet([Fernet(k) for k in ENV_KEYS]) if ENV_KEYS else None
-except ValueError:
-    raise SystemExit("APP_ENCRYPTION_KEY is invalid. Make one with:\n"
+try:  # secrets in the database are encrypted with this key; comma-separate keys to rotate (first one encrypts)
+    _fernet = MultiFernet([Fernet(k.strip()) for k in os.environ["APP_ENCRYPTION_KEY"].split(",")])
+except (KeyError, ValueError):
+    raise SystemExit("APP_ENCRYPTION_KEY missing or invalid. Make one with:\n"
                      "  python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'")
 
-
-def load_key(c):
-    """No APP_ENCRYPTION_KEY: generate one on first start and keep it in the database (convenient, but a
-    database dump then contains the key too). If the variable is set later, the stored key is still used
-    to read old data."""
-    global _fernet
-    if not ENV_KEYS:
-        c.execute("INSERT INTO settings VALUES ('encryption_key', %s, %s) ON CONFLICT (key) DO NOTHING",
-                  (Fernet.generate_key().decode(), now_ms()))
-    row = c.execute("SELECT value FROM settings WHERE key = 'encryption_key'").fetchone()
-    if row:
-        _fernet = MultiFernet([Fernet(k) for k in ENV_KEYS] + [Fernet(row["value"])])
-    state["key_in_db"] = not ENV_KEYS
+# Defaults shipped in app/Dockerfile so a fresh deploy starts without any setup. Public, so they only
+# exist to be replaced: the Settings tab warns while they are in use. Keep in sync with the Dockerfile.
+DEFAULTS = {"ADMIN_PASSWORD": "change-me-now", "APP_ENCRYPTION_KEY": "OUtBFNS7RLufbap6HmC4neMXDM4tT8liuMIQd89nLA8="}
 
 
 def enc(cfg):
@@ -119,14 +108,14 @@ def init_db():
         CREATE TABLE IF NOT EXISTS users (username TEXT PRIMARY KEY, password_hash TEXT NOT NULL);
         CREATE TABLE IF NOT EXISTS sessions (token_hash TEXT PRIMARY KEY, username TEXT NOT NULL, expires_ms BIGINT NOT NULL);
         """)
-        load_key(c)
         user, pw = os.environ.get("ADMIN_USER"), os.environ.get("ADMIN_PASSWORD")
         if user and pw and len(pw) < 8:
             raise SystemExit("ADMIN_PASSWORD must be at least 8 characters")
         if user and pw:  # the env is the source of truth for this account: change it there to reset the password
             c.execute("INSERT INTO users VALUES (%s, %s) ON CONFLICT (username) DO UPDATE SET password_hash = excluded.password_hash",
                       (user, hash_password(pw)))
-        # no users and no ADMIN_PASSWORD: the first visitor creates the account (see /api/setup)
+        if not c.execute("SELECT 1 FROM users").fetchone():
+            raise SystemExit("No users yet: set ADMIN_USER and ADMIN_PASSWORD")
 
 
 def now_ms():
@@ -414,7 +403,7 @@ async def security_headers(request: Request, call_next):
 @app.middleware("http")
 async def require_login(request: Request, call_next):
     p = request.url.path
-    if p.startswith("/api/") and p not in ("/api/login", "/api/setup") and not await run_in_threadpool(session_user, request):
+    if p.startswith("/api/") and p != "/api/login" and not await run_in_threadpool(session_user, request):
         return JSONResponse({"detail": "login required"}, 401)
     return await call_next(request)
 
@@ -424,15 +413,6 @@ def healthz():
     return {"ok": True}
 
 
-def start_session(c, request, response, username):
-    tok = os.urandom(32).hex()
-    c.execute("DELETE FROM sessions WHERE expires_ms < %s", (now_ms(),))
-    c.execute("INSERT INTO sessions VALUES (%s, %s, %s)", (sha(tok), username, now_ms() + SESSION_MS))
-    response.set_cookie("session", tok, max_age=SESSION_MS // 1000, httponly=True, samesite="strict",
-                        secure=COOKIE_SECURE or request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https")
-    return {"user": username}
-
-
 @app.post("/api/login")
 def login(request: Request, response: Response, body: dict = Body(...)):
     with db() as c:
@@ -440,33 +420,12 @@ def login(request: Request, response: Response, body: dict = Body(...)):
         if not (u and check_password(body.get("password") or "", u["password_hash"])):
             time.sleep(1)  # ponytail: slows guessing per request only; real rate limiting belongs in a reverse proxy
             raise HTTPException(401, "Wrong username or password")
-        return start_session(c, request, response, u["username"])
-
-
-SETUP_TOKEN = os.environ.get("SETUP_TOKEN", "")
-
-
-@app.get("/api/setup")
-def setup_status():
-    with db() as c:
-        return {"needed": not c.execute("SELECT 1 FROM users").fetchone(), "token_required": bool(SETUP_TOKEN)}
-
-
-@app.post("/api/setup")
-def setup(request: Request, response: Response, body: dict = Body(...)):
-    """First run without ADMIN_PASSWORD: create the admin account. Closed for good once any user exists."""
-    user, pw = (body.get("username") or "").strip(), body.get("password") or ""
-    if SETUP_TOKEN and not hmac.compare_digest(str(body.get("token") or ""), SETUP_TOKEN):
-        time.sleep(1)
-        raise HTTPException(403, "Wrong setup token")
-    if not user or len(pw) < 8:
-        raise HTTPException(400, "Choose a username and a password of at least 8 characters")
-    with db() as c:
-        c.execute("SELECT pg_advisory_xact_lock(1, 1)")  # two first visitors must not both succeed
-        if c.execute("SELECT 1 FROM users").fetchone():
-            raise HTTPException(409, "Setup is already done; sign in instead")
-        c.execute("INSERT INTO users VALUES (%s, %s)", (user, hash_password(pw)))
-        return start_session(c, request, response, user)
+        tok = os.urandom(32).hex()
+        c.execute("DELETE FROM sessions WHERE expires_ms < %s", (now_ms(),))
+        c.execute("INSERT INTO sessions VALUES (%s, %s, %s)", (sha(tok), u["username"], now_ms() + SESSION_MS))
+    response.set_cookie("session", tok, max_age=SESSION_MS // 1000, httponly=True, samesite="strict",
+                        secure=COOKIE_SECURE or request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https")
+    return {"user": u["username"]}
 
 
 @app.post("/api/logout")
@@ -544,7 +503,7 @@ def public_settings():
     s = settings()
     return {**{k: ("" if k in SETTING_SECRETS else s[k]) for k in SETTING_ENV},
             "secrets_set": sorted(k for k in SETTING_SECRETS if s[k]), "configured": s["configured"],
-            "key_in_db": state["key_in_db"]}
+            "default_secrets": [k for k, v in DEFAULTS.items() if os.environ.get(k) == v or v in os.environ.get(k, "").split(",")]}
 
 
 @app.get("/api/settings")

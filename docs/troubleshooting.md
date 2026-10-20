@@ -7,13 +7,13 @@ Start with the logs: `docker compose logs -f app`. The status chip in the page h
 | Message | Cause |
 |---|---|
 | `Missing required environment variables: ...` | Only `DATABASE_URL` is required to start. The listed variable isn't set on the container. On a hosting platform they must be added to the application's environment; a `.env` file is only read by Docker Compose. See [Configuration](configuration.md). |
-| `APP_ENCRYPTION_KEY is invalid` | Generate a key with the command in the message; it must be a Fernet key (44 characters). Or remove the variable to let the app generate one. |
+| `APP_ENCRYPTION_KEY is invalid` | Generate a key with the command in the message; it must be a Fernet key (44 characters). |
 | `ADMIN_PASSWORD must be at least 8 characters` | Use a longer password. |
 | `connection refused` / `could not translate host name "db"` | Postgres isn't reachable. With Compose, check `docker compose ps`; with an external database check `DATABASE_URL` and the network. |
 
 ## I can't sign in
 
-If you set `ADMIN_PASSWORD`, use it with `ADMIN_USER`; the account is recreated from them on every start. Otherwise use the account you created on first visit. Forgot it? Set `ADMIN_USER`/`ADMIN_PASSWORD` and restart to reset it, or `DELETE FROM users;` to get the create-account page again. Behind HTTPS the session cookie is `Secure`, so signing in over plain HTTP won't keep the session.
+Use `ADMIN_USER` and `ADMIN_PASSWORD` from the environment (defaults: `admin` / `change-me-now`). The account is recreated from them on every start, so to reset a forgotten password set a new `ADMIN_PASSWORD` and restart. Behind HTTPS the session cookie is `Secure`, so signing in over plain HTTP won't keep the session.
 
 ## The Runs tab is empty
 
@@ -48,7 +48,7 @@ Open the integration in the table and check the counters and **Last error**.
 
 ## Credentials show as empty after a restart
 
-The log contains `cannot decrypt an integration config`: the encryption key changed since the integration was saved (a different `APP_ENCRYPTION_KEY`, or the key row in the `settings` table was lost). Restore the old key (you can list the new one first, comma-separated, see [Security](security.md#rotating-secrets)) or enter the credentials again.
+The log contains `cannot decrypt an integration config`: `APP_ENCRYPTION_KEY` differs from the one used when the integration was saved. Restore the old key, or list both with the new one first (`NEWKEY,OLDKEY`, see [Security](security.md#rotating-secrets)), or enter the credentials again.
 
 ## Starting over
 
