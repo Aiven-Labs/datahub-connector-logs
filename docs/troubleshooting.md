@@ -6,7 +6,7 @@ Start with the logs: `docker compose logs -f app`. The status chip in the page h
 
 | Message | Cause |
 |---|---|
-| `KeyError: 'GMS_URL'` (or `DATAHUB_TOKEN`, `KAFKA_BOOTSTRAP`, `DATABASE_URL`) | A required variable is missing. See [Configuration](configuration.md). |
+| `Missing required environment variables: ...` | The listed variables aren't set on the container. On a hosting platform they must be added to the application's environment; a `.env` file is only read by Docker Compose. See [Configuration](configuration.md). |
 | `APP_ENCRYPTION_KEY missing or invalid` | Generate a key with the command in the message; it must be a Fernet key (44 characters). |
 | `No users yet: set ADMIN_USER and ADMIN_PASSWORD` | First start without an admin account configured. |
 | `ADMIN_PASSWORD must be at least 8 characters` | Use a longer password. |

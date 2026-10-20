@@ -28,6 +28,10 @@ import sinks
 log = logging.getLogger("app")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
+_missing = [k for k in ("GMS_URL", "DATAHUB_TOKEN", "KAFKA_BOOTSTRAP", "DATABASE_URL", "APP_ENCRYPTION_KEY") if not os.environ.get(k)]
+if _missing:  # one clear message instead of a KeyError traceback per variable
+    raise SystemExit("Missing required environment variables: " + ", ".join(_missing) + " (see docs/configuration.md)")
+
 GMS_URL = os.environ["GMS_URL"].rstrip("/")  # GraphQL + the Avro schema registry live on GMS
 TOKEN = os.environ["DATAHUB_TOKEN"]
 TOPIC = os.environ.get("MCL_TOPIC", "MetadataChangeLog_Versioned_v1")
