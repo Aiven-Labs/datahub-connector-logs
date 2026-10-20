@@ -2,13 +2,15 @@
 
 The app needs only a handful of environment variables to start (database, encryption key, admin login). The **DataHub connection** (GMS URL, token, Kafka address and certificates) is entered in the app's **Settings** tab and stored encrypted in Postgres, see below. With Docker Compose they come from a `.env` file next to `docker-compose.yml`; copy [`.env.example`](../.env.example) to start. Never commit `.env` (it is in `.gitignore`).
 
-## Required
+## Security and login (all optional)
+
+With none of these set, the app is fully self-configuring: it generates an encryption key on first start and the first visitor creates the admin account in the browser.
 
 | Variable | Description |
 |---|---|
-| `DATABASE_URL` | Postgres connection URI (see below). Optional with the bundled Compose database. |
-| `APP_ENCRYPTION_KEY` | Fernet key that encrypts integration credentials and the DataHub connection settings in Postgres. Generate with `python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`. Comma-separate several keys to rotate; the first one encrypts, all can decrypt. **Back it up**: without it saved credentials can't be read. |
-| `ADMIN_USER`, `ADMIN_PASSWORD` | The UI login. The account is created or updated on every start, so changing the password here resets it. Minimum 8 characters. |
+| `APP_ENCRYPTION_KEY` | Fernet key that encrypts integration credentials and the DataHub connection settings in Postgres. If unset, the app generates one on first start and stores it in the database (the Settings tab shows a warning); setting it later keeps working because the stored key is still used to read old data, and new saves use yours. Generate with `python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'`. Comma-separate several keys to rotate; the first one encrypts, all can decrypt. **Back it up**: without it saved credentials can't be read. |
+| `ADMIN_USER`, `ADMIN_PASSWORD` | The UI login. When set, the account is created or updated on every start, so changing the password here resets it. Minimum 8 characters. When unset and there are no users, the sign-in page becomes a one-time **create admin account** form. |
+| `SETUP_TOKEN` | If set, creating the first admin account requires this value. Use it when the URL is public, so a stranger can't claim the account before you. Ignored once a user exists. |
 
 ## DataHub connection (Settings tab)
 
@@ -46,7 +48,7 @@ The same settings can be provided as environment variables instead, which is han
 | `KAFKA_GROUP` | `datahub-logs-app` | Consumer group. A new name replays the topic from the beginning. |
 | `STUCK_HOURS` | `3` | A `RUNNING`/`PENDING` run with no update for this long is shown as *stuck*. |
 | `RETENTION_DAYS` | `30` | Runs (and their logs) older than this are deleted hourly. `0` keeps everything. |
-| `COOKIE_SECURE` | off | Set to `1` when the app is served over HTTPS so the session cookie is only sent over TLS. |
+| `COOKIE_SECURE` | auto | The session cookie is marked `Secure` automatically when the request arrives over HTTPS (`X-Forwarded-Proto`). Set `1` to force it. |
 
 ## What is *not* configured here
 

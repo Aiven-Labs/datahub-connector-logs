@@ -10,7 +10,7 @@ Ingestion logs can contain hostnames, file paths, table names and sometimes conn
 
 | Asset | Where it lives | Protection |
 |---|---|---|
-| Integration credentials (Datadog API key, Kafka certificates and passwords, OpenSearch password) | `destinations.config` in Postgres | Encrypted with Fernet (AES-128-CBC + HMAC-SHA256) using `APP_ENCRYPTION_KEY`, which is never stored in the database. A database dump or backup does not reveal them. The API never returns secret values. |
+| Integration credentials (Datadog API key, Kafka certificates and passwords, OpenSearch password) | `destinations.config` in Postgres | Encrypted with Fernet (AES-128-CBC + HMAC-SHA256) using `APP_ENCRYPTION_KEY`. When that variable is set the key is never stored in the database and a dump does not reveal the credentials. When it isn't, the app generates a key and stores it in the `settings` table, so the encryption only protects against casual reads of the credential columns; set the variable for real protection (the Settings tab warns while the key is in the database). The API never returns secret values. |
 | Admin password | `users` table | scrypt hash. The plain value only exists in your environment. |
 | Sessions | `sessions` table | Random 256-bit tokens, stored as SHA-256 hashes, `HttpOnly` + `SameSite=Strict` cookie, 7-day lifetime, deleted on logout. |
 | DataHub token, Kafka certificates and key for DataHub's cluster | `settings` table in Postgres (or environment variables) | Encrypted like integration credentials. The API never returns the token or the key; the certificates (public) are shown in the Settings tab. |
@@ -20,8 +20,9 @@ Additional measures: all `/api` routes require login, responses carry `Content-S
 
 ## Hardening checklist
 
-- [ ] Serve the app over **HTTPS** and set `COOKIE_SECURE=1`.
-- [ ] Use a long random `ADMIN_PASSWORD` and a unique `POSTGRES_PASSWORD` (or an external Postgres with TLS, `sslmode=require`).
+- [ ] Serve the app over **HTTPS** (the session cookie is then marked `Secure` automatically).
+- [ ] Set `APP_ENCRYPTION_KEY` so the key isn't stored beside the data. On a public URL set `SETUP_TOKEN` before the first visit, or set `ADMIN_PASSWORD`, so nobody else can create the admin account.
+- [ ] Use a long random admin password and a unique `POSTGRES_PASSWORD` (or an external Postgres with TLS, `sslmode=require`).
 - [ ] Keep `APP_ENCRYPTION_KEY` and `ADMIN_PASSWORD` in a secret manager, not in the image or in git.
 - [ ] Use a Kafka user with **read-only** access to the DataHub topic, and a DataHub token of a user that only has *Manage Ingestion*.
 - [ ] Restrict network access to port 8000 (VPC, VPN, IP allow-list). Login throttling is only a one-second delay per attempt; real rate limiting belongs in a reverse proxy.
@@ -30,7 +31,7 @@ Additional measures: all `/api` routes require login, responses carry `Content-S
 
 ## Rotating secrets
 
-**`ADMIN_PASSWORD`**: change it in the environment and restart. The account is updated at startup. Existing sessions stay valid until they expire; to end them all, run `DELETE FROM sessions;`.
+**Admin password**: if you use `ADMIN_PASSWORD`, change it in the environment and restart. The account is updated at startup. Existing sessions stay valid until they expire; to end them all, run `DELETE FROM sessions;`.
 
 **`APP_ENCRYPTION_KEY`**:
 

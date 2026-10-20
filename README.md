@@ -35,19 +35,15 @@ You need Docker with Compose, a DataHub with an access token, and the connection
 
    ```bash
    cp .env.example .env
-   # set ADMIN_PASSWORD
-   python3 -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'   # paste into APP_ENCRYPTION_KEY
+   # optional: nothing is required; see docs/configuration.md for the security options
    ```
-
-   If you don't have `cryptography` installed locally, run the same one-liner in any Python container:
-   `docker run --rm python:3.12-slim sh -c "pip -q install cryptography && python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())'"`.
 4. **Start.**
 
    ```bash
    docker compose up -d --build
    ```
 
-5. Open <http://localhost:8000>, sign in with `ADMIN_USER` / `ADMIN_PASSWORD`, and fill in the **Settings** tab: DataHub URL and token, Kafka host and port, and the PEM text of the CA, client certificate and key. **Test connection**, then **Save**.
+5. Open <http://localhost:8000>, create the admin account on the first visit, and fill in the **Settings** tab: DataHub URL and token, Kafka host and port, and the PEM text of the CA, client certificate and key. **Test connection**, then **Save**.
 
 On first start the app replays what is still in the Kafka topic (about the last 24 hours on Aiven) so the Runs tab fills up straight away.
 
