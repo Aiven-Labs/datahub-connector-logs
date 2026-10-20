@@ -1,0 +1,5 @@
+body { margin: 0; background: var(--aquarium-background-color-body); color: var(--aquarium-text-color-default); font-family: 'Inter Variable', system-ui, sans-serif; }
+.log { margin: 0; padding: 12px 16px; background: #0b0c0e; border: 1px solid var(--aquarium-colors-grey-60); color: #d1d5db; border-radius: 4px;
+  font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-all; }
+.log .err { display: block; color: #fca5a5; background: #3b1d1d; }
+.log mark { background: #facc15; }

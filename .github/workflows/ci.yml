@@ -1,0 +1,18 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image (type-checks and builds the UI)
+        run: docker build -f app/Dockerfile -t datahub-connector-logs .
+      - name: Run checks
+        run: |
+          KEY=$(docker run --rm datahub-connector-logs python -c 'from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())')
+          docker run --rm -e GMS_URL=x -e DATAHUB_TOKEN=x -e KAFKA_BOOTSTRAP=x -e DATABASE_URL=x \
+            -e APP_ENCRYPTION_KEY="$KEY" datahub-connector-logs python tests.py
