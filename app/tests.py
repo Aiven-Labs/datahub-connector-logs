@@ -2,6 +2,8 @@
 import os
 
 import sinks
+import main
+from fastapi import HTTPException
 from main import DEFAULTS, check_password, clean_config, dec, enc, hash_password, kafka_conf, summarize
 
 # --- failure summary picks the real error ---
@@ -53,6 +55,36 @@ conf = kafka_conf({"kafka_bootstrap": "h:1", "kafka_ca": "-----BEGIN CERTIFICATE
                    "kafka_cert": "/certs/service.cert", "kafka_key": ""})
 assert conf["ssl.ca.pem"].endswith("\n") and conf["ssl.certificate.location"] == "/certs/service.cert"
 assert "ssl.key.pem" not in conf and "ssl.key.location" not in conf
+# --- secrets never follow a changed endpoint, and bad endpoints are refused ---
+def refused(fn, *a):
+    try:
+        fn(*a)
+    except (HTTPException, ValueError):
+        return True
+    return False
+
+
+old = {"url": "https://os.example.com", "index": "i", "username": "u", "password": "secret"}
+kept = clean_config("opensearch", {"url": "https://os.example.com", "index": "i2"}, old)
+assert kept["password"] == "secret" and kept["index"] == "i2"
+assert refused(clean_config, "opensearch", {"url": "https://evil.example.net", "index": "i"}, old)  # password blank
+moved = clean_config("opensearch", {"url": "https://evil.example.net", "password": "new"}, old)
+assert moved["password"] == "new"
+assert refused(clean_config, "datadog", {"site": "evil.com/x?", "api_key": "k"}, None)
+assert refused(sinks.check_url, "file:///etc/passwd") and refused(sinks.check_url, "http://169.254.169.254/latest")
+assert refused(sinks.check_url, "https://user:pw@host.example.com") and not refused(sinks.check_url, "https://127.0.0.1:8080")
+assert refused(sinks.check_hostport, "bad host:1") and not refused(sinks.check_hostport, "10.0.0.1:9092,10.0.0.2:9092")
+
+cur = {"gms_url": "https://gms.example.com", "token": "t", "kafka_bootstrap": "10.0.0.1:9092",
+       "kafka_ca": "ca", "kafka_cert": "crt", "kafka_key": "key"}
+main.settings = lambda: cur
+assert main.merged_settings({})["token"] == "t"
+assert main.merged_settings({"gms_url": "https://gms.example.com/"})["token"] == "t"  # same URL, trailing slash
+assert refused(main.merged_settings, {"gms_url": "https://evil.example.net"})  # token not re-entered
+assert main.merged_settings({"gms_url": "https://other.example.net", "token": "n"})["token"] == "n"
+assert refused(main.merged_settings, {"kafka_bootstrap": "10.9.9.9:1", "kafka_key": "k"})  # ca and cert missing
+assert refused(main.merged_settings, {"gms_url": "http://169.254.169.254"})
+
 # --- the defaults baked into app/Dockerfile match the ones the app warns about ---
 assert all(os.environ[k] == v for k, v in DEFAULTS.items()), "Dockerfile ENV and main.DEFAULTS differ"
 print("ok")

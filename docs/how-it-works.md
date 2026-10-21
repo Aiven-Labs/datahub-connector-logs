@@ -28,7 +28,7 @@ Details that matter:
 - **Wire format.** Messages are Avro in Confluent wire format (magic byte, 4-byte schema id, payload). Schemas are fetched from the schema registry that DataHub serves at `<GMS URL>/schema-registry/api/schemas/ids/{id}`, authenticated with the access token from Settings, and cached.
 - **Ordering.** All events for one run share a Kafka key (the run URN), so they land in one partition and arrive in order. The last event seen is the newest.
 - **Source names.** Events only contain the source URN. The app resolves names through the GraphQL `listIngestionSources` query (cached for 30 seconds). If the source is gone or the input event already expired from Kafka, it asks DataHub for that run individually, and otherwise shows `(unknown source)`.
-- **Commit after write.** Kafka offsets are committed only after Postgres has the data, so a crash re-reads the batch instead of losing it. Writes are upserts, so re-reading is harmless.
+- **Commit after write.** Kafka offsets are committed only after Postgres has the data, so a crash re-reads the batch instead of losing it. If applying a batch fails (for example GMS is restarting during a DataHub upgrade), the consumer seeks back to the start of that batch and tries again after 5 seconds; the failure shows in the header chip until it succeeds. Writes are upserts, so re-reading is harmless.
 - **Consumer group.** `KAFKA_GROUP` (default `datahub-logs-app`). To replay the retention window into an empty database, point the app at a new group name.
 - **Failure summary.** For failed runs the app extracts a one-line reason: the last Python exception in the log, else the last line that looks like an error.
 

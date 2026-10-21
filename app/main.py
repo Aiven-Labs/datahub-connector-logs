@@ -15,7 +15,7 @@ from contextlib import asynccontextmanager
 
 import fastavro
 import psycopg
-from confluent_kafka import Consumer
+from confluent_kafka import Consumer, TopicPartition
 from confluent_kafka.admin import AdminClient
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
 from fastapi import Body, FastAPI, HTTPException, Request, Response
@@ -144,10 +144,35 @@ def settings():
     return _settings["val"]
 
 
+# Secrets are only ever sent to the endpoint they were saved with: changing the endpoint means entering them again.
+SECRETS_OF = {"gms_url": ("token",), "kafka_bootstrap": ("kafka_ca", "kafka_cert", "kafka_key")}
+
+
 def merged_settings(body):
-    """Form values, with blank fields (e.g. secrets that are never sent back) taken from what is already set."""
+    """Form values, with blank fields (secrets are never sent back) taken from what is already set, as long as
+    the endpoint they belong to is unchanged. Raises 400 on a bad or moved endpoint."""
     cur = settings()
-    return {k: (body.get(k) or "").strip() or cur[k] for k in SETTING_ENV}
+    form = {k: (body.get(k) or "").strip() for k in SETTING_ENV}
+    form["gms_url"] = form["gms_url"].rstrip("/")
+    out = {k: form[k] or cur[k] for k in SETTING_ENV}
+    for endpoint, secrets in SECRETS_OF.items():
+        if out[endpoint] == cur[endpoint]:
+            continue
+        again = [s for s in secrets if cur[s] and not form[s]]
+        if again:
+            raise HTTPException(400, f"{endpoint.replace('_', ' ')} changed, so enter {', '.join(s.replace('_', ' ') for s in again)} again")
+        out.update({s: form[s] for s in secrets})
+    try:
+        if out["gms_url"]:
+            sinks.check_url(out["gms_url"])
+    except ValueError as e:
+        raise HTTPException(400, f"DataHub URL: {e}")
+    try:
+        if out["kafka_bootstrap"]:
+            sinks.check_hostport(out["kafka_bootstrap"])
+    except ValueError as e:
+        raise HTTPException(400, f"Bootstrap servers: {e}")
+    return out
 
 
 # ---------- DataHub access (schema registry + GraphQL on GMS) ----------
@@ -155,13 +180,14 @@ def gms(path, body=None, s=None):
     s = s or settings()
     req = urllib.request.Request(s["gms_url"] + path, json.dumps(body).encode() if body else None,
                                  {"Authorization": f"Bearer {s['token']}", "Content-Type": "application/json"})
-    return json.loads(urllib.request.urlopen(req, timeout=30).read())
+    return json.loads(sinks.opener.open(req, timeout=30).read())
 
 
 def gql(query, variables=None, s=None):
     r = gms("/api/graphql", {"query": query, "variables": variables or {}}, s)
-    if r.get("errors"):
-        raise RuntimeError(json.dumps(r["errors"])[:300])
+    if r.get("errors"):  # the details can echo internals: keep them in the log, not in API responses
+        log.warning("DataHub GraphQL errors: %s", json.dumps(r["errors"])[:500])
+        raise RuntimeError("DataHub returned a GraphQL error (details are in the app log)")
     return r["data"]
 
 
@@ -277,6 +303,7 @@ def consume(s):
     state["consumer_error"] = None  # connection problems show up again via consume() errors
     try:
         while settings()["_v"] == s["_v"]:
+            msgs = []
             try:
                 batch = c.consume(200, timeout=1.0)
                 for m in batch:
@@ -294,10 +321,15 @@ def consume(s):
                     resolve_sources(conn)
                 c.commit(asynchronous=False)  # only after the database has the data
                 state["consumer_error"] = None
-            except Exception as e:  # e.g. GMS briefly down; uncommitted batch is re-read after restart
+            except Exception as e:  # e.g. GMS restarting during a DataHub upgrade
                 log.exception("consumer failed")
                 state["consumer_error"] = str(e)
-                time.sleep(5)
+                first = {}
+                for m in msgs:  # the client already moved past this batch: seek back so it is read again
+                    first.setdefault((m.topic(), m.partition()), m.offset())
+                for (t, p), off in first.items():
+                    c.seek(TopicPartition(t, p, off))  # if this fails we leave, and the restart resumes from the last commit
+                time.sleep(5)  # ponytail: a message that can never be applied would stall here; the error stays visible in the header
     finally:
         c.close()  # settings changed: reconnect with the new ones
 
@@ -514,8 +546,6 @@ def get_settings():
 @app.put("/api/settings")
 def put_settings(body: dict = Body(...)):
     new = merged_settings(body)
-    if new["gms_url"] and not new["gms_url"].startswith(("http://", "https://")):
-        raise HTTPException(400, "DataHub URL must start with https:// (or http://)")
     with db() as c:  # store what the form has; blank fields keep falling back to the env vars
         c.execute("""INSERT INTO settings VALUES ('datahub', %s, %s) ON CONFLICT (key)
                      DO UPDATE SET value = excluded.value, updated_ms = excluded.updated_ms""", (enc(new), now_ms()))
@@ -563,18 +593,35 @@ def clean_config(type_, cfg, old=None):
     """Apply defaults, keep an existing secret when the form leaves it blank, check required fields."""
     if type_ not in sinks.TYPES:
         raise HTTPException(400, f"unknown destination type {type_}")
-    out = {}
-    for fld in sinks.TYPES[type_]["fields"]:
-        v = (cfg.get(fld["name"]) or "").strip() or (old or {}).get(fld["name"]) or fld.get("default", "")
+    fields, old = sinks.TYPES[type_]["fields"], old or {}
+    out, moved = {}, None
+    for fld in fields:  # fields that decide where the secrets go: if one changes, the saved secrets must not follow
+        if fld.get("endpoint"):
+            out[fld["name"]] = v = (cfg.get(fld["name"]) or "").strip() or old.get(fld["name"]) or fld.get("default", "")
+            try:
+                v and fld["endpoint"](v)
+            except ValueError as e:
+                raise HTTPException(400, f"{fld['label']}: {e}")
+            if old.get(fld["name"]) and v != old[fld["name"]]:
+                moved = fld["label"]
+    for fld in fields:
+        if fld["name"] in out:
+            continue
+        given = (cfg.get(fld["name"]) or "").strip()
+        keep = old.get(fld["name"]) if not (moved and fld.get("secret")) else None
+        v = given or keep or fld.get("default", "")
         if fld.get("required") and not v:
             raise HTTPException(400, f"{fld['label']} is required")
+        if moved and fld.get("secret") and not given and old.get(fld["name"]):
+            raise HTTPException(400, f"{moved} changed, so enter {fld['label']} again")
         out[fld["name"]] = v
     return out
 
 
 @app.get("/api/destination-types")
 def destination_types():
-    return [{"type": k, "label": v["label"], "fields": v["fields"]} for k, v in sinks.TYPES.items()]
+    return [{"type": k, "label": v["label"], "fields": [{n: x for n, x in f.items() if n != "endpoint"} for f in v["fields"]]}
+            for k, v in sinks.TYPES.items()]
 
 
 @app.get("/api/destinations")

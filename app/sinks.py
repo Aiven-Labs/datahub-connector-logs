@@ -4,8 +4,12 @@
 event = {run_id, urn, source_urn, source_name, source_type, status, start_ms, duration_ms, summary, report}
 """
 import base64
+import ipaddress
 import json
+import re
+import socket
 import urllib.error
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 
@@ -18,12 +22,56 @@ def clip(text, max_bytes):
     return text if len(b) <= max_bytes else "[...truncated...]\n" + b[-max_bytes:].decode(errors="ignore")
 
 
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *a, **kw):  # urllib would replay our auth headers to wherever a server redirects
+        return None
+
+
+opener = urllib.request.build_opener(_NoRedirect)
+
+
+def check_host(host):
+    """Secrets are sent to hosts an admin typed in. Refuse cloud metadata / link-local targets (private and
+    loopback stay allowed: DataHub and OpenSearch are often internal).
+    ponytail: checked when saving, not on every request, so DNS rebinding isn't covered; pin the resolved IP to fix."""
+    if not host or host.lower() in ("metadata.google.internal", "metadata"):
+        raise ValueError("invalid host")
+    try:
+        addrs = {a[4][0] for a in socket.getaddrinfo(host, None)}
+    except socket.gaierror:
+        return  # unresolvable here: the connection test will say so
+    for a in addrs:
+        ip = ipaddress.ip_address(a.split("%")[0])
+        if ip.is_link_local or ip.is_unspecified or ip.is_multicast or ip == ipaddress.ip_address("fd00:ec2::254"):
+            raise ValueError(f"{host} resolves to a link-local or reserved address")
+
+
+def check_url(url):
+    u = urllib.parse.urlsplit(url)
+    if u.scheme not in ("http", "https") or not u.hostname or u.username or u.password:
+        raise ValueError("must be an http:// or https:// URL without credentials")
+    check_host(u.hostname)
+
+
+def check_hostport(value):
+    for hp in value.split(","):
+        host, sep, port = hp.strip().rpartition(":")
+        if not (sep and port.isdigit() and re.fullmatch(r"[A-Za-z0-9.\-]+|\[[0-9A-Fa-f:]+\]", host)):
+            raise ValueError("must look like host:port (comma-separated for several)")
+        check_host(host.strip("[]"))
+
+
+def check_site(site):  # goes into https://http-intake.logs.<site>/...
+    if not re.fullmatch(r"[A-Za-z0-9]([A-Za-z0-9.\-]*[A-Za-z0-9])?", site):
+        raise ValueError("must be a Datadog site such as datadoghq.com")
+
+
 def http(method, url, body, headers):
     req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json", **headers}, method=method)
     try:
-        urllib.request.urlopen(req, timeout=30).read()
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"HTTP {e.code}: {e.read()[:300].decode(errors='replace')}") from None
+        opener.open(req, timeout=30).read()
+    except urllib.error.HTTPError as e:  # status only: response bodies can echo request data or internal details
+        raise RuntimeError(f"HTTP {e.code} {e.reason}") from None
 
 
 # ---------- Kafka ----------
@@ -81,12 +129,12 @@ def f(name, label, type="text", **kw):
 TYPES = {
     "datadog": {"label": "Datadog Logs", "send": send_datadog, "fields": [
         f("api_key", "API key", "password", secret=True, required=True),
-        f("site", "Datadog site", default="datadoghq.com", required=True, placeholder="datadoghq.com / datadoghq.eu / us5.datadoghq.com"),
+        f("site", "Datadog site", default="datadoghq.com", required=True, endpoint=check_site, placeholder="datadoghq.com / datadoghq.eu / us5.datadoghq.com"),
         f("service", "Service name", default="datahub-ingestion", required=True),
         f("tags", "Extra tags", placeholder="env:prod,team:data"),
     ]},
     "kafka": {"label": "Apache Kafka", "send": send_kafka, "fields": [
-        f("bootstrap", "Bootstrap servers", required=True, placeholder="host:port"),
+        f("bootstrap", "Bootstrap servers", required=True, endpoint=check_hostport, placeholder="host:port"),
         f("topic", "Topic", required=True, default="datahub.ingestion.logs"),
         f("security_protocol", "Security", "select", options=["SSL", "SASL_SSL", "PLAINTEXT"], default="SSL"),
         f("ca_pem", "CA certificate (PEM)", "textarea"),
@@ -97,7 +145,7 @@ TYPES = {
         f("password", "SASL password", "password", secret=True),
     ]},
     "opensearch": {"label": "OpenSearch", "send": send_opensearch, "fields": [
-        f("url", "Service URL", required=True, placeholder="https://host:port"),
+        f("url", "Service URL", required=True, endpoint=check_url, placeholder="https://host:port"),
         f("index", "Index", required=True, default="datahub-ingestion-runs"),
         f("username", "Username"),
         f("password", "Password", "password", secret=True),

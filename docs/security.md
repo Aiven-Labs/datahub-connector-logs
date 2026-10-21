@@ -18,6 +18,8 @@ Ingestion logs can contain hostnames, file paths, table names and sometimes conn
 
 Additional measures: all `/api` routes require login, responses carry `Content-Security-Policy`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff` and `Referrer-Policy`, the container runs as a non-root user, and a failed login is delayed by one second.
 
+**Secrets stay with their endpoint.** Saved secrets are only used for the host they were saved with. If you change the DataHub URL, the Kafka bootstrap servers, an OpenSearch URL, a Datadog site or a destination's bootstrap servers, the matching saved secrets are not reused: the form asks you to enter them again. Endpoints must be plain `http(s)://` URLs or `host:port` values and may not point at link-local or cloud-metadata addresses (private and loopback hosts are allowed). HTTP requests do not follow redirects, so a server can't bounce an API key to another host, and error messages carry the HTTP status but never the response body. The address check happens when you save, not on every request, so DNS rebinding isn't covered.
+
 ## Hardening checklist
 
 - [ ] Serve the app over **HTTPS** (the session cookie is then marked `Secure` automatically).
