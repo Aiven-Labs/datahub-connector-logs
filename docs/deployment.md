@@ -29,7 +29,7 @@ Before using it beyond a trial:
 
 - Set `POSTGRES_PASSWORD` to your own value in `.env` **before the first start** (the database is created with it).
 - Put the app behind a reverse proxy that terminates TLS (it should send `X-Forwarded-Proto`; otherwise set `COOKIE_SECURE=1`).
-- The `db` service is not published on the host; keep it that way. `docker-compose.yml` contains only the app and Postgres. The app does not run or need a Kafka of its own: DataHub's Kafka and your destinations are external services reached through settings. `docker-compose.dev.yml` is a local testing helper; never deploy it.
+- The `db` service is not published on the host; keep it that way. `docker-compose.yml` contains only the app and Postgres. The app does not run or need a Kafka of its own: DataHub's Kafka and your destinations are external services reached through settings.
 - Back up the `pg-data` volume (or use `pg_dump`) and keep `APP_ENCRYPTION_KEY` somewhere safe.
 
 ## Importing the Compose file into a platform

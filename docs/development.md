@@ -13,7 +13,6 @@ web/
   scripts/         Generator for the dark theme (src/dark.css)
 docs/              Documentation
 docker-compose.yml     App + Postgres (this is what you deploy)
-docker-compose.dev.yml Throwaway local Kafka for testing the Kafka integration
 .env.example       All settings
 ```
 
@@ -58,19 +57,6 @@ docker compose run --rm --no-deps -e DATABASE_URL=x app python tests.py
 ```
 
 It prints `ok` when everything passes. The checks cover failure-summary extraction, log clipping, the exact requests sent to Datadog and OpenSearch, integration config handling (defaults, required fields, secrets kept when left blank), secret encryption and password hashing. No database or network is needed. CI runs the same checks plus a full image build, see [`.github/workflows/ci.yml`](../.github/workflows/ci.yml).
-
-## Trying the Kafka destination locally
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d kafka
-```
-
-Add a Kafka integration with bootstrap servers `kafka:9092` and security `PLAINTEXT`, then consume what arrives:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.dev.yml exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
-  --bootstrap-server kafka:9092 --topic datahub.ingestion.logs --from-beginning
-```
 
 ## Conventions
 
