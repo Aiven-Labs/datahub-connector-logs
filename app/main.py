@@ -1,5 +1,6 @@
 """DataHub ingestion logs: read run results from DataHub's own Kafka (MetadataChangeLog topic),
 index them for browsing, and forward them to user-configured destinations (see sinks.py)."""
+import asyncio
 import io
 import hashlib
 import hmac
@@ -446,18 +447,29 @@ def healthz():
 
 
 @app.post("/api/login")
-def login(request: Request, response: Response, body: dict = Body(...)):
+async def login(request: Request, response: Response, body: dict = Body(...)):
+    # ponytail: the delay slows guessing per request only; real rate limiting belongs in a reverse proxy.
+    # It is awaited (not time.sleep) so failed logins can't occupy the worker threads the rest of the API uses.
+    if not (user := await run_in_threadpool(check_login, body)):
+        await asyncio.sleep(1)
+        raise HTTPException(401, "Wrong username or password")
+    return await run_in_threadpool(start_session, request, response, user)
+
+
+def check_login(body):
     with db() as c:
         u = c.execute("SELECT * FROM users WHERE username = %s", (body.get("username"),)).fetchone()
-        if not (u and check_password(body.get("password") or "", u["password_hash"])):
-            time.sleep(1)  # ponytail: slows guessing per request only; real rate limiting belongs in a reverse proxy
-            raise HTTPException(401, "Wrong username or password")
+    return u["username"] if u and check_password(str(body.get("password") or ""), u["password_hash"]) else None
+
+
+def start_session(request, response, username):
+    with db() as c:
         tok = os.urandom(32).hex()
         c.execute("DELETE FROM sessions WHERE expires_ms < %s", (now_ms(),))
-        c.execute("INSERT INTO sessions VALUES (%s, %s, %s)", (sha(tok), u["username"], now_ms() + SESSION_MS))
+        c.execute("INSERT INTO sessions VALUES (%s, %s, %s)", (sha(tok), username, now_ms() + SESSION_MS))
     response.set_cookie("session", tok, max_age=SESSION_MS // 1000, httponly=True, samesite="strict",
                         secure=COOKIE_SECURE or request.headers.get("x-forwarded-proto") == "https" or request.url.scheme == "https")
-    return {"user": u["username"]}
+    return {"user": username}
 
 
 @app.post("/api/logout")
@@ -478,6 +490,7 @@ def me(request: Request):
 def runs(status: str = "", source: str = "", exclude: str = "", q: str = "", limit: int = 100, offset: int = 0):
     """status: comma list, or 'problems' = failed + stuck runs."""
     where, args = [], []
+    limit, offset = max(1, min(limit, 500)), max(0, offset)
     stuck_before = now_ms() - STUCK_MS
     if status == "problems":
         where.append(f"(status IN ({ph(len(FAILED))}) OR (status IN ('RUNNING','PENDING') AND updated_ms < %s))")
@@ -495,13 +508,18 @@ def runs(status: str = "", source: str = "", exclude: str = "", q: str = "", lim
         args += ex
     if q:  # searches the full log text
         where.append("(report ILIKE %s OR source_name ILIKE %s)")
-        args += [f"%{q}%"] * 2
+        like = "%" + q.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_") + "%"  # q is text, not a pattern
+        args += [like] * 2
     w = " WHERE " + " AND ".join(where) if where else ""
-    with db() as c:
-        total = c.execute(f"SELECT COUNT(*) AS n FROM runs{w}", args).fetchone()["n"]
-        rows = c.execute(f"""SELECT urn, source_urn, source_name, source_type, status, start_ms, duration_ms, summary, updated_ms
-                             FROM runs{w} ORDER BY COALESCE(start_ms, updated_ms) DESC LIMIT %s OFFSET %s""",
-                         [*args, limit, offset]).fetchall()
+    try:
+        with db() as c:
+            c.execute("SET LOCAL statement_timeout = '10s'")  # a log search scans every report: bound its cost
+            total = c.execute(f"SELECT COUNT(*) AS n FROM runs{w}", args).fetchone()["n"]
+            rows = c.execute(f"""SELECT urn, source_urn, source_name, source_type, status, start_ms, duration_ms, summary, updated_ms
+                                 FROM runs{w} ORDER BY COALESCE(start_ms, updated_ms) DESC LIMIT %s OFFSET %s""",
+                             [*args, limit, offset]).fetchall()
+    except psycopg.errors.QueryCanceled:
+        raise HTTPException(503, "That search took too long. Narrow it with the status or source filters.")
     return {"total": total, "items": [dict(r) | {"stuck": r["status"] in RUNNING and r["updated_ms"] < stuck_before} for r in rows]}
 
 

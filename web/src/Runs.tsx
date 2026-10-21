@@ -18,8 +18,12 @@ const chipOf = (r: Run) =>
 
 const esc = (s: string) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[c]!)
 
+const MAX_LINES = 3000 // the browser only renders the end of very long logs (that's where the error is); Download has it all
+
 function LogView({ text, q }: { text: string; q: string }) {
-  const html = text.split('\n').map((l) => {
+  const all = text.split('\n')
+  const lines = all.length > MAX_LINES ? [`[... ${all.length - MAX_LINES} earlier lines hidden, use "Download log" for the full log ...]`, ...all.slice(-MAX_LINES)] : all
+  const html = lines.map((l) => {
     let h = esc(l)
     if (q) h = h.split(esc(q)).join(`<mark>${esc(q)}</mark>`)
     return /\b(ERROR|Traceback|Exception|Error:)\b/.test(l) ? `<span class="err">${h}</span>` : h + '\n'
