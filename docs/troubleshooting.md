@@ -17,6 +17,7 @@ Use `ADMIN_USER` and `ADMIN_PASSWORD` from the environment (defaults: `admin` / 
 
 ## The Runs tab is empty
 
+1. An orange chip *N message(s) skipped* means the app dropped messages it could not decode or store; the app log has one `skipping message ...` line per message with its partition and offset. Everything else keeps flowing.
 1. Look at the header chip. A red **Kafka consumer error** points at the cause:
    - `Not configured yet`: finish the **Settings** tab.
    - `SSL`/`certificate` errors: wrong CA, certificate or key in Settings (paste the full PEM including the `-----BEGIN` lines). **Test connection** in Settings shows the exact error.

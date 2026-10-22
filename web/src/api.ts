@@ -14,7 +14,7 @@ export type Dest = {
   statuses: string[]; source_urns: string[]; max_report_kb: number
   sent: number; retrying: number; dead: number; last_error: string | null
 }
-export type Health = { consumer_error?: string | null; last_event_ms?: number | null }
+export type Health = { consumer_error?: string | null; last_event_ms?: number | null; skipped?: number; browse?: boolean }
 
 export async function api<T = any>(url: string, method = 'GET', body?: unknown): Promise<T> {
   const r = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) })

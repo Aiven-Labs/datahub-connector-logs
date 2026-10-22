@@ -33,10 +33,15 @@ function Main({ user }: { user: string }) {
     return () => clearInterval(t)
   }, [])
 
+  const browse = health.browse !== false // the server can disable log browsing (DISABLE_LOG_BROWSING=1)
+  useEffect(() => { if (!browse && tab === 'runs') pick('integrations') }, [browse])
+
   const chip = health.consumer_error
     ? { status: 'danger' as const, text: `Kafka consumer error: ${health.consumer_error.slice(0, 80)}` }
     : health.last_event_ms
-      ? { status: 'success' as const, text: `Last DataHub event ${fmtTime(health.last_event_ms)}` }
+      ? health.skipped
+        ? { status: 'warning' as const, text: `${health.skipped} message(s) skipped, see the app log. Last event ${fmtTime(health.last_event_ms)}` }
+        : { status: 'success' as const, text: `Last DataHub event ${fmtTime(health.last_event_ms)}` }
       : { status: 'neutral' as const, text: 'Waiting for events…' }
 
   return (
@@ -59,7 +64,7 @@ function Main({ user }: { user: string }) {
         </Alert></Box>
       )}
       <Tabs value={tab} onChange={pick}>
-        <Tabs.Tab title="Runs" value="runs"><Runs /></Tabs.Tab>
+        {browse ? <Tabs.Tab title="Runs" value="runs"><Runs /></Tabs.Tab> : undefined}
         <Tabs.Tab title="Integrations" value="integrations"><Integrations /></Tabs.Tab>
         <Tabs.Tab title="Settings" value="settings"><Settings onConfigured={setConfigured} /></Tabs.Tab>
       </Tabs>

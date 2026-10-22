@@ -72,4 +72,4 @@ Tables are created if missing on start, and data and integrations survive becaus
 
 ## Resource use
 
-Stored data is dominated by run logs (up to a few MB each, typically far less). Runs older than `RETENTION_DAYS` (default 30) are deleted every hour. Memory use is small; the image is Python plus the Kafka client library.
+Stored data is dominated by run logs (up to a few MB each, typically far less). Runs older than `RETENTION_DAYS` (default 7, or 2 with `DISABLE_LOG_BROWSING=1`) are deleted every hour. Memory use is small; the image is Python plus the Kafka client library.

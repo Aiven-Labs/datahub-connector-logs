@@ -37,7 +37,7 @@ assert headers["Authorization"] == "Basic dTpw" and body["@timestamp"].startswit
 
 # --- config handling: defaults, required fields, secrets kept when the form leaves them blank ---
 assert clean_config("datadog", {"api_key": "K"})["site"] == "datadoghq.com"
-assert clean_config("datadog", {"api_key": ""}, {"api_key": "OLD"})["api_key"] == "OLD"
+assert clean_config("datadog", {"api_key": ""}, {"api_key": "OLD", "site": "datadoghq.com"})["api_key"] == "OLD"
 try:
     clean_config("datadog", {})
     raise SystemExit("missing required field was accepted")
@@ -84,6 +84,62 @@ assert refused(main.merged_settings, {"gms_url": "https://evil.example.net"})  #
 assert main.merged_settings({"gms_url": "https://other.example.net", "token": "n"})["token"] == "n"
 assert refused(main.merged_settings, {"kafka_bootstrap": "10.9.9.9:1", "kafka_key": "k"})  # ca and cert missing
 assert refused(main.merged_settings, {"gms_url": "http://169.254.169.254"})
+
+# --- a type change must not carry saved secrets to the new type's endpoint ---
+assert main.old_config({"type": "opensearch", "config": enc({"password": "secret"})}, "opensearch") == {"password": "secret"}
+assert main.old_config({"type": "opensearch", "config": enc({"password": "secret"})}, "kafka") is None
+assert refused(clean_config, "kafka", {"bootstrap": "evil.example.net:9093", "topic": "t"}, {"password": "secret", "bootstrap": ""})  # old lacked the field
+
+# --- only errors that go away by themselves are retried forever ---
+import urllib.error
+import psycopg
+assert main.transient(urllib.error.URLError("down")) and main.transient(psycopg.OperationalError())
+assert main.transient(urllib.error.HTTPError("u", 503, "x", None, None)) and not main.transient(urllib.error.HTTPError("u", 404, "x", None, None))
+assert not main.transient(ValueError("bad avro")) and not main.transient(KeyError("entityType"))
+
+# --- a message that can never be stored is skipped (after retries), a transient failure never is ---
+class Conn:
+    def __enter__(self): return self
+    def __exit__(self, *a): return False
+    def transaction(self): return self
+
+
+class Msg:
+    def __init__(self, v, off): self.v, self.off = v, off
+    def value(self): return self.v
+    def topic(self): return "t"
+    def partition(self): return 0
+    def offset(self): return self.off
+    def timestamp(self): return (0, 1)
+
+
+applied = []
+main.db = lambda: Conn()
+main.apply_event = lambda c, ev, ts: applied.append(ev)
+
+
+def decode(b):
+    if b == b"bad":
+        raise ValueError("bad avro")
+    if b == b"down":
+        raise urllib.error.URLError("gms restarting")
+    return b
+
+
+main.avro_decode = decode
+batch = [Msg(b"a", 1), Msg(b"bad", 2), Msg(b"b", 3)]
+try:
+    main.store(batch, False)
+    raise AssertionError("a bad message must fail the batch before the retries run out")
+except ValueError:
+    pass
+applied.clear()
+assert main.store(batch, True) == 1 and applied == [b"a", b"b"]
+try:
+    main.store([Msg(b"down", 4)], True)
+    raise AssertionError("a transient error must never be skipped")
+except urllib.error.URLError:
+    pass
 
 # --- the defaults baked into app/Dockerfile match the ones the app warns about ---
 assert all(os.environ[k] == v for k, v in DEFAULTS.items()), "Dockerfile ENV and main.DEFAULTS differ"

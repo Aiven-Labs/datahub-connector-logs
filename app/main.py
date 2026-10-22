@@ -11,6 +11,7 @@ import re
 import struct
 import threading
 import time
+import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager
 
@@ -19,7 +20,7 @@ import psycopg
 from confluent_kafka import Consumer, TopicPartition
 from confluent_kafka.admin import AdminClient
 from cryptography.fernet import Fernet, InvalidToken, MultiFernet
-from fastapi import Body, FastAPI, HTTPException, Request, Response
+from fastapi import Body, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.rows import dict_row
@@ -39,12 +40,15 @@ GROUP = os.environ.get("KAFKA_GROUP", "datahub-logs-app")
 DATABASE_URL = os.environ["DATABASE_URL"]  # e.g. postgresql://user:pass@host:5432/db?sslmode=require
 SESSION_MS = 7 * 86400_000
 COOKIE_SECURE = os.environ.get("COOKIE_SECURE") == "1"  # set when served over https
-RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "30"))  # 0 = keep runs forever
+BROWSE_LOGS = os.environ.get("DISABLE_LOG_BROWSING") != "1"  # off: /api/runs* are disabled and the Runs tab is hidden
+# Logs are stored unencrypted, so keep few of them: a week by default, two days when nobody browses (delivery only
+# needs recent runs). 0 = keep runs forever.
+RETENTION_DAYS = int(os.environ.get("RETENTION_DAYS", "7" if BROWSE_LOGS else "2"))
 STUCK_MS = int(os.environ.get("STUCK_HOURS", "3")) * 3600_000
 MAX_ATTEMPTS = 5
 RUNNING = ("RUNNING", "PENDING")
 FAILED = ("FAILURE", "TIMEOUT", "ABORTED", "CANCELLED")
-state = {"last_event_ms": None, "consumer_error": None}
+state = {"last_event_ms": None, "consumer_error": None, "skipped": 0}
 
 
 # ---------- postgres: the app keeps no state of its own ----------
@@ -297,11 +301,41 @@ def consumer():
             time.sleep(5)
 
 
+POISON_ATTEMPTS = 3  # a batch that fails this many times for a reason that retrying can't fix is handled message by message
+
+
+def transient(e):
+    """Errors that go away by themselves (GMS or Postgres restarting, network): wait and retry, never skip."""
+    if isinstance(e, urllib.error.HTTPError):
+        return e.code >= 500 or e.code in (408, 429)
+    return isinstance(e, (OSError, psycopg.OperationalError))
+
+
+def store(msgs, skip_bad):
+    """Write a batch to Postgres. With skip_bad, a message that can't be decoded or stored is logged and dropped
+    instead of failing the batch. Returns how many were dropped."""
+    skipped = 0
+    with db() as conn:
+        for m in msgs:
+            if not m.value():
+                continue
+            try:
+                with conn.transaction():  # savepoint: a bad message doesn't spoil the rest of the batch
+                    apply_event(conn, avro_decode(m.value()), m.timestamp()[1])
+            except Exception as e:
+                if not skip_bad or transient(e):
+                    raise
+                skipped += 1
+                log.error("skipping message %s[%s]@%s that cannot be processed: %r", m.topic(), m.partition(), m.offset(), e)
+    return skipped
+
+
 def consume(s):
     c = Consumer({**kafka_conf(s), "group.id": GROUP, "auto.offset.reset": "earliest", "enable.auto.commit": False,
                   "fetch.message.max.bytes": 8 << 20, "max.partition.fetch.bytes": 8 << 20})
     c.subscribe([TOPIC])
     state["consumer_error"] = None  # connection problems show up again via consume() errors
+    fails = 0  # consecutive failures that retrying can't fix; reset by any success
     try:
         while settings()["_v"] == s["_v"]:
             msgs = []
@@ -314,17 +348,21 @@ def consume(s):
                 msgs = [m for m in batch if not m.error()]
                 if not msgs:
                     continue
-                with db() as conn:
-                    for m in msgs:
-                        if m.value():
-                            apply_event(conn, avro_decode(m.value()), m.timestamp()[1])
-                    state["last_event_ms"] = max(m.timestamp()[1] for m in msgs)
-                    resolve_sources(conn)
+                state["skipped"] += store(msgs, skip_bad=fails >= POISON_ATTEMPTS)
+                state["last_event_ms"] = max(m.timestamp()[1] for m in msgs)
                 c.commit(asynchronous=False)  # only after the database has the data
+                fails = 0
                 state["consumer_error"] = None
+                try:  # source names come from GMS: if it is down the runs wait for the next batch, nothing is lost
+                    with db() as conn:
+                        resolve_sources(conn)
+                except Exception as e:
+                    log.warning("could not resolve source names yet: %s", e)
             except Exception as e:  # e.g. GMS restarting during a DataHub upgrade
                 log.exception("consumer failed")
                 state["consumer_error"] = str(e)
+                if not transient(e):
+                    fails += 1
                 first = {}
                 for m in msgs:  # the client already moved past this batch: seek back so it is read again
                     first.setdefault((m.topic(), m.partition()), m.offset())
@@ -486,7 +524,12 @@ def me(request: Request):
 
 
 # ---------- browse API ----------
-@app.get("/api/runs")
+def browsing():
+    if not BROWSE_LOGS:
+        raise HTTPException(404, "Log browsing is disabled on this server")
+
+
+@app.get("/api/runs", dependencies=[Depends(browsing)])
 def runs(status: str = "", source: str = "", exclude: str = "", q: str = "", limit: int = 100, offset: int = 0):
     """status: comma list, or 'problems' = failed + stuck runs."""
     where, args = [], []
@@ -523,7 +566,7 @@ def runs(status: str = "", source: str = "", exclude: str = "", q: str = "", lim
     return {"total": total, "items": [dict(r) | {"stuck": r["status"] in RUNNING and r["updated_ms"] < stuck_before} for r in rows]}
 
 
-@app.get("/api/runs/{run_id}")
+@app.get("/api/runs/{run_id}", dependencies=[Depends(browsing)])
 def run(run_id: str):
     with db() as c:
         r = c.execute("SELECT * FROM runs WHERE urn = %s", (f"urn:li:dataHubExecutionRequest:{run_id}",)).fetchone()
@@ -545,7 +588,7 @@ def sources():
 def health():
     with db() as c:  # consumer state resets on restart; the index remembers
         last = c.execute("SELECT MAX(updated_ms) AS m FROM runs").fetchone()["m"]
-    return {**state, "last_event_ms": state["last_event_ms"] or last}
+    return {**state, "last_event_ms": state["last_event_ms"] or last, "browse": BROWSE_LOGS}
 
 
 # ---------- connection settings API (the setup wizard) ----------
@@ -620,7 +663,7 @@ def clean_config(type_, cfg, old=None):
                 v and fld["endpoint"](v)
             except ValueError as e:
                 raise HTTPException(400, f"{fld['label']}: {e}")
-            if old.get(fld["name"]) and v != old[fld["name"]]:
+            if old and v != old.get(fld["name"]):
                 moved = fld["label"]
     for fld in fields:
         if fld["name"] in out:
@@ -648,10 +691,16 @@ def destinations():
         return [public(d, c) for d in c.execute("SELECT * FROM destinations ORDER BY id").fetchall()]
 
 
+def old_config(row, type_):
+    """Saved config to fall back on for blank fields. Only for the same type: the field names overlap between
+    types (password, username, ...), so reusing it after a type change would send secrets to a new endpoint."""
+    return dec(row["config"]) if row and row["type"] == type_ else None
+
+
 def save(body, dest_id=None):
     with db() as c:
         old = c.execute("SELECT * FROM destinations WHERE id = %s", (dest_id,)).fetchone() if dest_id else None
-        cfg = clean_config(body["type"], body.get("config", {}), dec(old["config"]) if old else None)
+        cfg = clean_config(body["type"], body.get("config", {}), old_config(old, body["type"]))
         statuses = [s for s in body.get("statuses", FAILED) if s in FAILED + ("SUCCESS",)] or list(FAILED)
         vals = (body.get("name") or body["type"], body["type"], enc(cfg), json.dumps(statuses),
                 json.dumps(body.get("source_urns", [])), max(1, min(int(body.get("max_report_kb", 900)), 5000)))
@@ -693,8 +742,8 @@ def retry_dead(dest_id: int):
 def test_destination(body: dict = Body(...)):
     """Send a sample event with the form's settings (id = reuse the saved secrets)."""
     with db() as c:
-        old = c.execute("SELECT config FROM destinations WHERE id = %s", (body.get("id"),)).fetchone() if body.get("id") else None
-    cfg = clean_config(body["type"], body.get("config", {}), dec(old["config"]) if old else None)
+        old = c.execute("SELECT type, config FROM destinations WHERE id = %s", (body.get("id"),)).fetchone() if body.get("id") else None
+    cfg = clean_config(body["type"], body.get("config", {}), old_config(old, body["type"]))
     ev = {"run_id": f"test-{now_ms()}", "urn": f"urn:li:dataHubExecutionRequest:test-{now_ms()}", "source_urn": "urn:test",
           "source_name": "datahub-logs-app test", "source_type": "test", "status": "SUCCESS", "start_ms": now_ms(),
           "duration_ms": 0, "summary": "", "report": "Test event from the DataHub logs app. Connection works."}

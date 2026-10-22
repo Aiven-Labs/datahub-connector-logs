@@ -47,7 +47,8 @@ The same settings can be provided as environment variables instead, which is han
 | `MCL_TOPIC` | `MetadataChangeLog_Versioned_v1` | Topic DataHub publishes metadata changes to. |
 | `KAFKA_GROUP` | `datahub-logs-app` | Consumer group. A new name replays the topic from the beginning. |
 | `STUCK_HOURS` | `3` | A `RUNNING`/`PENDING` run with no update for this long is shown as *stuck*. |
-| `RETENTION_DAYS` | `30` | Runs (and their logs) older than this are deleted hourly. `0` keeps everything. |
+| `RETENTION_DAYS` | `7` (`2` when log browsing is disabled) | Runs (and their logs) older than this are deleted hourly. `0` keeps everything. Logs are stored unencrypted, so keep this short. |
+| `DISABLE_LOG_BROWSING` | off | Set to `1` to turn off `/api/runs` and `/api/runs/{id}` and hide the Runs tab. The app then only collects runs and forwards them to your integrations; the logs sit in Postgres just long enough for delivery. |
 
 ## What is *not* configured here
 
