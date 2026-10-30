@@ -73,3 +73,7 @@ On first start the app replays what is still in the Kafka topic (about the last 
 - **Delivery is at-least-once.** A run can reach a destination twice after a crash. The Kafka key and the OpenSearch document id are the run id, so consumers can deduplicate.
 - **Run logs are stored unencrypted** in Postgres (so they can be searched). Credentials for integrations are encrypted.
 - **One admin account**, set through environment variables.
+
+## License
+
+[Apache License 2.0](LICENSE).
