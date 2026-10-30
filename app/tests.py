@@ -90,12 +90,35 @@ assert main.old_config({"type": "opensearch", "config": enc({"password": "secret
 assert main.old_config({"type": "opensearch", "config": enc({"password": "secret"})}, "kafka") is None
 assert refused(clean_config, "kafka", {"bootstrap": "evil.example.net:9093", "topic": "t"}, {"password": "secret", "bootstrap": ""})  # old lacked the field
 
-# --- only errors that go away by themselves are retried forever ---
+# --- only errors that blame the message itself may be skipped; GMS trouble never is ---
+import json
 import urllib.error
 import psycopg
-assert main.transient(urllib.error.URLError("down")) and main.transient(psycopg.OperationalError())
-assert main.transient(urllib.error.HTTPError("u", 503, "x", None, None)) and not main.transient(urllib.error.HTTPError("u", 404, "x", None, None))
-assert not main.transient(ValueError("bad avro")) and not main.transient(KeyError("entityType"))
+assert main.skippable(ValueError("bad")) and main.skippable(KeyError("x")) and main.skippable(psycopg.errors.DataError("nul"))
+assert not main.skippable(main.GmsError("x")) and not main.skippable(urllib.error.HTTPError("u", 401, "x", None, None))
+assert not main.skippable(urllib.error.URLError("down")) and not main.skippable(psycopg.OperationalError())
+real_decode = main.avro_decode
+
+
+def gms_fails(exc):
+    def f(*a, **k):
+        raise exc
+    return f
+
+
+for exc in (urllib.error.HTTPError("u", 401, "Unauthorized", None, None), urllib.error.HTTPError("u", 404, "x", None, None),
+            urllib.error.URLError("down"), json.JSONDecodeError("html login page", "<html>", 0)):
+    main.gms = gms_fails(exc)  # expired token, unknown schema, outage, or HTML instead of JSON
+    try:
+        real_decode(b"\x00\x00\x00\x00\x07rest")
+        raise AssertionError("schema fetch failures must raise")
+    except main.GmsError:
+        pass
+try:
+    real_decode(b"\x00\x01")
+    raise AssertionError("a truncated message must raise")
+except ValueError:
+    pass
 
 # --- a message that can never be stored is skipped (after retries), a transient failure never is ---
 class Conn:
@@ -139,6 +162,12 @@ try:
     main.store([Msg(b"down", 4)], True)
     raise AssertionError("a transient error must never be skipped")
 except urllib.error.URLError:
+    pass
+main.avro_decode, main.gms = real_decode, gms_fails(urllib.error.HTTPError("u", 401, "Unauthorized", None, None))
+try:  # expired DataHub token: every message fails to decode, none may be skipped
+    main.store([Msg(b"\x00\x00\x00\x00\x07rest", 5)], True)
+    raise AssertionError("an expired token must never cause skipping")
+except main.GmsError:
     pass
 
 # --- the defaults baked into app/Dockerfile match the ones the app warns about ---

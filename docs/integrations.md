@@ -12,7 +12,7 @@ An integration forwards finished ingestion runs to an external system. Create th
 | Max log size per run | 900 KB | Longer logs are cut, keeping the **end** of the log. Range 1 to 5000 KB. |
 | Also send runs already collected | off | On a new integration only. By default only runs that finish after you create it are sent. |
 
-Credentials are encrypted before they are stored and are never shown again; when you edit an integration, leave a password field empty to keep the saved value.
+Credentials are encrypted before they are stored and are never shown again; when you edit an integration, leave a password or key field empty to keep the saved value. (The Kafka CA and client certificate are public values and are shown when you edit.) Saved secrets are only reused for the endpoint they were saved with: if you change the Datadog site, the Kafka bootstrap servers or the OpenSearch URL, or the integration's type, you must enter the secrets again.
 
 The table shows per integration: **Delivered**, **Pending** (waiting to retry), **Failed** (gave up after 5 attempts) and the **last error**. The row menu has Edit, Pause/Resume, **Retry failed** (try the pending and failed runs again) and Delete. Delivery rules and retries are described in [How it works](how-it-works.md#delivery-to-integrations).
 
@@ -87,9 +87,9 @@ def send_webhook(cfg, ev):
     http("POST", cfg["url"], ev, {"Authorization": f"Bearer {cfg['token']}"})  # http() raises on non-2xx
 
 TYPES["webhook"] = {"label": "Webhook", "send": send_webhook, "fields": [
-    f("url", "URL", required=True, placeholder="https://..."),
+    f("url", "URL", required=True, endpoint=check_url, placeholder="https://..."),
     f("token", "Token", "password", secret=True),   # secret=True: encrypted at rest, never returned by the API
 ]}
 ```
 
-Field types are `text`, `password`, `textarea` and `select` (with `options`). Add a check next to the existing ones in [`app/tests.py`](../app/tests.py) that asserts the request your function makes.
+Field types are `text`, `password`, `textarea` and `select` (with `options`). A field that decides where the secrets are sent (a URL, host or site) should carry `endpoint=` with a validator from `sinks.py` (`check_url`, `check_hostport`, `check_site`): it rejects bad values and stops saved secrets from being reused when the field changes. Add a check next to the existing ones in [`app/tests.py`](../app/tests.py) that asserts the request your function makes.

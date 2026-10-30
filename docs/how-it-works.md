@@ -27,8 +27,8 @@ Details that matter:
 
 - **Wire format.** Messages are Avro in Confluent wire format (magic byte, 4-byte schema id, payload). Schemas are fetched from the schema registry that DataHub serves at `<GMS URL>/schema-registry/api/schemas/ids/{id}`, authenticated with the access token from Settings, and cached.
 - **Ordering.** All events for one run share a Kafka key (the run URN), so they land in one partition and arrive in order. The last event seen is the newest.
-- **Source names.** Events only contain the source URN. The app resolves names through the GraphQL `listIngestionSources` query (cached for 30 seconds). If the source is gone or the input event already expired from Kafka, it asks DataHub for that run individually, and otherwise shows `(unknown source)`.
-- **Commit after write.** Kafka offsets are committed only after Postgres has the data, so a crash re-reads the batch instead of losing it. If applying a batch fails (for example GMS is restarting during a DataHub upgrade), the consumer seeks back to the start of that batch and tries again after 5 seconds; the failure shows in the header chip until it succeeds. Failures that go away by themselves (GMS or Postgres unavailable, 5xx or 429 answers) are retried forever. A failure that retrying can't fix, such as an undecodable message, is retried three times; after that the batch is processed message by message and the message that can't be processed is logged with its topic, partition and offset and skipped, so one bad message can't block the rest. The header chip then shows how many messages were skipped since the app started. Writes are upserts, so re-reading is harmless.
+- **Source names.** Events only contain the source URN. The app resolves names through the GraphQL `listIngestionSources` query (cached for 30 seconds). If the source is gone or the input event already expired from Kafka, it asks DataHub for that run individually, and otherwise shows `(unknown source)`. If GMS can't be reached while resolving names, the runs are stored without a name and resolved with a later batch; they are not delivered until then.
+- **Commit after write.** Kafka offsets are committed only after Postgres has the data, so a crash re-reads the batch instead of losing it. If applying a batch fails (for example GMS is restarting during a DataHub upgrade), the consumer seeks back to the start of that batch and tries again after 5 seconds; the failure shows in the header chip until it succeeds. Only a failure that blames the message itself (bytes that aren't valid Avro, malformed JSON, a value Postgres refuses such as a NUL character) can ever lead to a skip: after three such failures the batch is processed message by message, and the message that can't be processed is logged with its topic, partition and offset and dropped, so one bad message can't block the rest. Everything else is retried forever and shown in the header chip: GMS errors (an expired or revoked token gives HTTP 401/403 on the schema registry, unknown schema ids, HTML instead of JSON, an outage), Postgres or network trouble and bugs. Nothing is committed or skipped while GMS rejects us. The header chip shows how many messages were skipped since the app started. Writes are upserts, so re-reading is harmless.
 - **Consumer group.** `KAFKA_GROUP` (default `datahub-logs-app`). To replay the retention window into an empty database, point the app at a new group name.
 - **Failure summary.** For failed runs the app extracts a one-line reason: the last Python exception in the log, else the last line that looks like an error.
 
@@ -64,6 +64,7 @@ Created automatically on startup.
 | `runs` | One row per ingestion run: status, source, timestamps, summary and the full log (`report`). Pruned after `RETENTION_DAYS`. |
 | `destinations` | Integrations. `config` holds the encrypted JSON of the form (including credentials). |
 | `deliveries` | Per integration and run: state, attempts, next retry, last error. |
+| `settings` | The DataHub connection saved from the Settings tab, as one encrypted JSON value. |
 | `users`, `sessions` | The admin account (scrypt hash) and login sessions (token stored as SHA-256). |
 
 ## HTTP API
@@ -73,10 +74,11 @@ The UI uses a JSON API under `/api`. Everything except `POST /api/login` require
 | Endpoint | |
 |---|---|
 | `POST /api/login`, `POST /api/logout`, `GET /api/me` | Session handling. Login body: `{"username", "password"}`. |
-| `GET /api/runs` | Query: `status` (`problems`, or comma list), `source`, `exclude` (comma list of source URNs), `q` (log text), `limit`, `offset`. |
-| `GET /api/runs/{run_id}` | One run including the full `report`. |
+| `GET /api/runs` | Disabled (404) with `DISABLE_LOG_BROWSING=1`. Query: `status` (`problems`, or comma list), `source`, `exclude` (comma list of source URNs), `q` (log text), `limit` (max 500), `offset`. |
+| `GET /api/runs/{run_id}` | One run including the full `report`. Disabled with `DISABLE_LOG_BROWSING=1`. |
 | `GET /api/sources` | Sources with run and failure counts. |
-| `GET /api/health` | Consumer state: last event time and last error. |
+| `GET /api/health` | Consumer state: last event time, last error, number of skipped messages, and whether log browsing is enabled. |
+| `GET/PUT /api/settings`, `POST /api/settings/test` | The DataHub connection (Settings tab). The token and certificates are never returned; `test` checks DataHub and Kafka with the given values. |
 | `GET /api/destination-types` | Destination types and their form fields. |
 | `GET/POST /api/destinations`, `PUT/DELETE /api/destinations/{id}` | Manage integrations. Secrets are never returned. |
 | `POST /api/destinations/{id}/retry` | Clear failed/pending deliveries. |

@@ -11,7 +11,6 @@ import re
 import struct
 import threading
 import time
-import urllib.error
 import urllib.request
 from contextlib import asynccontextmanager
 
@@ -159,6 +158,9 @@ def merged_settings(body):
     cur = settings()
     form = {k: (body.get(k) or "").strip() for k in SETTING_ENV}
     form["gms_url"] = form["gms_url"].rstrip("/")
+    for k in ("kafka_ca", "kafka_cert", "kafka_key"):  # env vars may be file paths; the form takes PEM text only
+        if form[k] and not form[k].startswith("-----BEGIN"):
+            raise HTTPException(400, f"{k.replace('_', ' ')} must be the PEM text (starting with -----BEGIN)")
     out = {k: form[k] or cur[k] for k in SETTING_ENV}
     for endpoint, secrets in SECRETS_OF.items():
         if out[endpoint] == cur[endpoint]:
@@ -199,12 +201,27 @@ def gql(query, variables=None, s=None):
 _schemas = {}
 
 
+class GmsError(Exception):
+    """DataHub (GMS) couldn't give us what we need: expired token, outage, odd answer. Never the message's fault,
+    so it is retried forever and never skipped."""
+
+
 def avro_decode(b):
-    """Confluent wire format: 0x00 + 4-byte schema id + avro payload."""
-    sid = struct.unpack(">I", b[1:5])[0]
+    """Confluent wire format: 0x00 + 4-byte schema id + avro payload. Raises ValueError for a message that is
+    itself undecodable (the only kind that may be skipped) and GmsError when the schema can't be fetched."""
+    try:
+        sid = struct.unpack(">I", b[1:5])[0]
+    except struct.error as e:
+        raise ValueError("not a Confluent wire-format message") from e
     if sid not in _schemas:
-        _schemas[sid] = fastavro.parse_schema(json.loads(gms(f"/schema-registry/api/schemas/ids/{sid}")["schema"]))
-    return fastavro.schemaless_reader(io.BytesIO(b[5:]), _schemas[sid])
+        try:
+            _schemas[sid] = fastavro.parse_schema(json.loads(gms(f"/schema-registry/api/schemas/ids/{sid}")["schema"]))
+        except Exception as e:  # HTTP 401/403/404/5xx, HTML instead of JSON, unparsable schema, ...
+            raise GmsError(f"schema {sid} from DataHub: {e}") from e
+    try:
+        return fastavro.schemaless_reader(io.BytesIO(b[5:]), _schemas[sid])
+    except Exception as e:
+        raise ValueError(f"cannot decode message: {e}") from e
 
 
 # ---------- consumer: DataHub Kafka -> postgres ----------
@@ -301,14 +318,14 @@ def consumer():
             time.sleep(5)
 
 
-POISON_ATTEMPTS = 3  # a batch that fails this many times for a reason that retrying can't fix is handled message by message
+POISON_ATTEMPTS = 3  # a batch that fails this many times because of a message is handled message by message
 
 
-def transient(e):
-    """Errors that go away by themselves (GMS or Postgres restarting, network): wait and retry, never skip."""
-    if isinstance(e, urllib.error.HTTPError):
-        return e.code >= 500 or e.code in (408, 429)
-    return isinstance(e, (OSError, psycopg.OperationalError))
+def skippable(e):
+    """Only errors that blame the message itself (bad bytes or JSON, a value Postgres refuses such as a NUL
+    character) may be skipped. Everything else (GMS, expired token, Postgres or network trouble, bugs) is retried
+    forever with the error shown in the UI, because skipping it would drop good data."""
+    return isinstance(e, (ValueError, KeyError, TypeError, psycopg.DataError)) and not isinstance(e, GmsError)
 
 
 def store(msgs, skip_bad):
@@ -323,7 +340,7 @@ def store(msgs, skip_bad):
                 with conn.transaction():  # savepoint: a bad message doesn't spoil the rest of the batch
                     apply_event(conn, avro_decode(m.value()), m.timestamp()[1])
             except Exception as e:
-                if not skip_bad or transient(e):
+                if not (skip_bad and skippable(e)):
                     raise
                 skipped += 1
                 log.error("skipping message %s[%s]@%s that cannot be processed: %r", m.topic(), m.partition(), m.offset(), e)
@@ -361,7 +378,7 @@ def consume(s):
             except Exception as e:  # e.g. GMS restarting during a DataHub upgrade
                 log.exception("consumer failed")
                 state["consumer_error"] = str(e)
-                if not transient(e):
+                if skippable(e):
                     fails += 1
                 first = {}
                 for m in msgs:  # the client already moved past this batch: seek back so it is read again

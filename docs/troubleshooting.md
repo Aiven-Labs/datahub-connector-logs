@@ -1,6 +1,6 @@
 # Troubleshooting
 
-Start with the logs: `docker compose logs -f app`. The status chip in the page header also shows the last DataHub event time, or the last Kafka consumer error.
+Start with the logs: `docker compose logs -f app`. The status chip in the page header shows the last DataHub event time, the last Kafka consumer error, or how many messages were skipped.
 
 ## The app won't start
 
@@ -18,22 +18,26 @@ Use `ADMIN_USER` and `ADMIN_PASSWORD` from the environment (defaults: `admin` / 
 ## The Runs tab is empty
 
 1. An orange chip *N message(s) skipped* means the app dropped messages it could not decode or store; the app log has one `skipping message ...` line per message with its partition and offset. Everything else keeps flowing.
-1. Look at the header chip. A red **Kafka consumer error** points at the cause:
+2. Look at the header chip. A red **Kafka consumer error** points at the cause:
    - `Not configured yet`: finish the **Settings** tab.
    - `SSL`/`certificate` errors: wrong CA, certificate or key in Settings (paste the full PEM including the `-----BEGIN` lines). **Test connection** in Settings shows the exact error.
    - `Failed to resolve` / timeouts: the Kafka host or port is wrong or not reachable from where the app runs (private port needs the VPC; public access must be enabled on the service).
    - `Subscribed topic not available` / authorization errors: the Kafka user needs read access to `MetadataChangeLog_Versioned_v1` and to the consumer group.
-   - `HTTP Error 401`/`403` from the schema registry: the access token in Settings is invalid or expired.
-2. If there is no error but nothing arrives, DataHub may not be producing events yet. Trigger an ingestion run and watch the chip's *last event* time.
-3. The filter might hide the rows: the default is *Problems only*, and *Hide sources* is remembered in the browser. Switch to *All runs* and clear *Hide sources*.
+   - `schema N from DataHub: HTTP Error 401`/`403`: the access token in Settings is invalid or expired. The consumer waits and retries; nothing is skipped or lost, and consumption resumes once the token is fixed. `HTTP Error 404` means DataHub doesn't know that schema id, and `HTTP Error 5xx` or a timeout means GMS is down.
+3. If there is no error but nothing arrives, DataHub may not be producing events yet. Trigger an ingestion run and watch the chip's *last event* time.
+4. The filter might hide the rows: the default is *Problems only*, and *Hide sources* is remembered in the browser. Switch to *All runs* and clear *Hide sources*.
 
 ## Runs show `(unknown source)`
 
 The app couldn't resolve the source name. Usually the token's user lacks **Manage Ingestion** (DataHub then returns `null` instead of an error), or the source was deleted. Fix the privilege; names are resolved for new runs automatically.
 
+## There is no Runs tab
+
+The server runs with `DISABLE_LOG_BROWSING=1`, which hides the Runs tab and disables `/api/runs`. Unset it and restart to browse logs.
+
 ## Old runs are missing
 
-The app only sees what Kafka still has. On Aiven that is about 24 hours. Runs from before the app first started (beyond that window) can't be recovered.
+The app only sees what Kafka still has: the topic's `retention.ms` (24 hours on the Aiven topic this was built against). Runs from before the app first started (beyond that window) can't be recovered.
 
 ## An integration isn't sending
 

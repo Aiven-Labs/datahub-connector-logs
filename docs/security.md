@@ -2,7 +2,7 @@
 
 ## Trust model
 
-The app is an **admin tool for a single trusted team**. Anyone who can sign in can read every ingestion log and can create integrations that make the app connect to arbitrary hosts (a Kafka cluster, an OpenSearch URL, an HTTPS endpoint) from wherever it runs. Run it where that is acceptable, usually a private network, and share the one login only with people who should see ingestion logs.
+The app is an **admin tool for a single trusted team**. There is a single shared login, with no per-user accounts or audit trail. Anyone who can sign in can read every ingestion log and can create integrations that make the app connect to arbitrary hosts (a Kafka cluster, an OpenSearch URL, an HTTPS endpoint) from wherever it runs. Run it where that is acceptable, usually a private network, and share the one login only with people who should see ingestion logs.
 
 Ingestion logs can contain hostnames, file paths, table names and sometimes connection errors that echo parts of configuration. Treat them as internal data.
 
@@ -10,7 +10,7 @@ Ingestion logs can contain hostnames, file paths, table names and sometimes conn
 
 | Asset | Where it lives | Protection |
 |---|---|---|
-| Integration credentials (Datadog API key, Kafka certificates and passwords, OpenSearch password) | `destinations.config` in Postgres | Encrypted with Fernet (AES-128-CBC + HMAC-SHA256) using `APP_ENCRYPTION_KEY`, which is never stored in the database, so a dump or backup does not reveal them. **The image ships a public default key and admin password so that a fresh deploy starts without setup. Replace both before exposing the app**; the Settings tab warns until you do. The API never returns secret values. |
+| Integration credentials (Datadog API key, Kafka certificates and passwords, OpenSearch password) | `destinations.config` in Postgres | Encrypted with Fernet (AES-128-CBC + HMAC-SHA256) using `APP_ENCRYPTION_KEY`, which is never stored in the database. **The image ships a public default key and admin password so that a fresh deploy starts without setup. While the default key is in use, anyone with a copy of the database can decrypt these credentials; replace both before exposing the app** (the Settings tab warns until you do). With your own key a dump or backup does not reveal them. The API never returns secret values. |
 | Admin password | `users` table | scrypt hash. The plain value only exists in your environment. |
 | Sessions | `sessions` table | Random 256-bit tokens, stored as SHA-256 hashes, `HttpOnly` + `SameSite=Strict` cookie, 7-day lifetime, deleted on logout. |
 | DataHub token, Kafka certificates and key for DataHub's cluster | `settings` table in Postgres (or environment variables) | Encrypted like integration credentials. The API never returns the token, certificates or key; the Settings tab shows `(unchanged)` for saved values and masks text while you paste it. |
@@ -28,7 +28,7 @@ Additional measures: all `/api` routes require login, responses carry `Content-S
 - [ ] Replace the default `ADMIN_PASSWORD` and `APP_ENCRYPTION_KEY` (the Settings tab warns while they are in use).
 - [ ] Use a long random admin password and a unique `POSTGRES_PASSWORD` (or an external Postgres with TLS, `sslmode=require`).
 - [ ] Keep `APP_ENCRYPTION_KEY` and `ADMIN_PASSWORD` in a secret manager, not in the image or in git.
-- [ ] Use a Kafka user with **read-only** access to the DataHub topic, and a DataHub token of a user that only has *Manage Ingestion*.
+- [ ] Use a dedicated Kafka user with **read-only** access to the DataHub topic and consumer group (not DataHub's own service user, which can write metadata), and a DataHub token of a user that only has *Manage Ingestion*.
 - [ ] Restrict network access to port 8000 (VPC, VPN, IP allow-list). Login throttling is only a one-second delay per attempt; real rate limiting belongs in a reverse proxy.
 - [ ] Do not expose Postgres publicly.
 - [ ] Back up Postgres and the encryption key (separately).
@@ -40,8 +40,8 @@ Additional measures: all `/api` routes require login, responses carry `Content-S
 **`APP_ENCRYPTION_KEY`**:
 
 1. Set the variable to `NEWKEY,OLDKEY` (new first) and restart. The app now encrypts with the new key and can still read data encrypted with the old one.
-2. Open each integration and press **Save**. Saving re-encrypts its configuration with the new key.
-3. Once every integration has been saved, remove `OLDKEY` from the variable.
+2. Open the **Settings** tab and each integration and press **Save** (leave secret fields empty). Saving re-encrypts the configuration with the new key.
+3. Once everything has been saved, remove `OLDKEY` from the variable.
 
 If the key is lost or wrong, integrations appear with empty credentials (a warning is logged). Enter the credentials again and save.
 
